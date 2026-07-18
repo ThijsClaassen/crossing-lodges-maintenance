@@ -120,6 +120,15 @@ const css = `
   .count-input{width:90px;background:rgba(0,0,0,.3);border:1px solid ${T.border};border-radius:6px;padding:7px 10px;color:${T.cream};font-family:'Space Mono',monospace;font-size:14px;text-align:right;outline:none;transition:border .15s}
   .count-input:focus{border-color:${T.gold}}
   .reorder-qty{display:inline-block;background:rgba(192,88,88,.18);color:${T.danger};border:1px solid rgba(192,88,88,.3);border-radius:4px;font-family:'Space Mono',monospace;font-size:12px;font-weight:700;padding:2px 10px}
+  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:8px}
+  .cal-head{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:${T.muted};font-weight:600;text-align:center;padding:5px 0}
+  .cal-cell{background:${T.panel};border:1px solid ${T.border};border-radius:6px;min-height:88px;padding:5px 4px;display:flex;flex-direction:column;gap:3px}
+  .cal-empty{background:transparent;border-color:transparent}
+  .cal-today{border-color:${T.gold};box-shadow:0 0 0 1px rgba(184,147,90,.3)}
+  .cal-date{font-family:'Space Mono',monospace;font-size:11px;color:${T.muted};padding-left:3px}
+  .cal-today .cal-date{color:${T.gold};font-weight:700}
+  .cal-job{background:rgba(0,0,0,.28);border:none;border-radius:3px;padding:3px 5px;font-family:'Inter',sans-serif;font-size:10px;font-weight:500;text-align:left;cursor:pointer;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;width:100%}
+  .cal-job:hover{background:rgba(184,147,90,.15)}
   .mobile-loc-bar{display:none}
   @media (max-width:768px){
     .sidebar{display:none}
@@ -140,6 +149,9 @@ const css = `
     .kpi-value{font-size:17px}
     .grid2,.grid3{grid-template-columns:1fr}
     .count-input{width:75px}
+    .cal-cell{min-height:62px;padding:3px 2px}
+    .cal-job{font-size:8px;padding:2px 3px}
+    .cal-grid{gap:2px}
   }
   @media (min-width:769px){.mobile-loc-bar{display:none!important}}
   ::-webkit-scrollbar{width:4px;height:4px}
@@ -679,7 +691,7 @@ function StockCount({ locId, items, purchases, issues, counts, setCounts }) {
 }
 
 // ─── ORDERS ──────────────────────────────────────────────────────────────────
-function Orders({ items, purchases, issues, counts }) {
+function Orders({ items, purchases, issues, counts, jobs, jobMaterials, templates, templateMaterials }) {
   const latestCount=useMemo(()=>{
     const m={};counts.forEach(c=>{if(!m[c.item_id]||c.created_at>m[c.item_id].created_at)m[c.item_id]=c;});return m;
   },[counts]);
@@ -696,15 +708,21 @@ function Orders({ items, purchases, issues, counts }) {
     }).filter(i=>i.isLow||i.toOrder>0).sort((a,b)=>b.toOrder-a.toOrder);
   },[items,purchases,issues,counts]);
   const totalOrderValue=orderList.reduce((s,i)=>s+i.toOrder*(i.open_cost||0),0);
+  const forecast = useMemo(()=>buildForecast({
+    jobs, jobMaterials, templates, templateMaterials, items, purchases, issues
+  }),[jobs,jobMaterials,templates,templateMaterials,items,purchases,issues]);
+  const forecastValue = forecast.reduce((s,r)=>s+r.shortfall*(r.item.open_cost||0),0);
   return (<>
     <div className="strip">
       <div className="strip-item"><div className="strip-label">Items to Order</div><div className="strip-val">{orderList.length}</div></div>
       <div className="strip-item"><div className="strip-label">Est. Order Value</div><div className="strip-val">{fmtR(totalOrderValue)}</div></div>
+      <div className="strip-item"><div className="strip-label">Job Shortfalls</div>
+        <div className="strip-val" style={{color:forecast.length>0?T.warn:T.ok}}>{forecast.length}</div></div>
     </div>
+    <div className="section-title">Below Minimum Stock</div>
     {orderList.length===0?(
-      <div className="empty" style={{marginTop:40}}>
-        <div style={{fontSize:28,marginBottom:10,opacity:.3}}>OK</div>
-        All items are above minimum stock level. No orders needed.
+      <div className="empty" style={{padding:"22px 32px"}}>
+        All items are above their minimum stock level.
       </div>
     ):(
       <div className="tbl-wrap"><table className="tbl">
@@ -736,12 +754,824 @@ function Orders({ items, purchases, issues, counts }) {
         </tbody>
       </table></div>
     )}
+
+    <div className="section-title" style={{marginTop:26}}>Required For Scheduled Jobs</div>
+    <div style={{fontSize:12,color:T.muted,marginBottom:12,lineHeight:1.6}}>
+      Materials needed by jobs due in the next {FORECAST_DAYS} working days, beyond what is currently in stock.
+      Recurring jobs are counted for every occurrence that falls inside the window.
+      This list is separate from the one above &mdash; an item can appear in both.
+    </div>
+    {forecast.length===0?(
+      <div className="empty" style={{padding:"22px 32px"}}>
+        Enough stock on hand for every job scheduled in the next {FORECAST_DAYS} working days.
+      </div>
+    ):(<>
+      <div className="tbl-wrap"><table className="tbl">
+        <thead><tr><th>Item</th><th className="num">Needed</th><th className="num">In Stock</th>
+          <th className="num">Short By</th><th className="num">Est. Cost</th><th>Required By</th></tr></thead>
+        <tbody>
+          {forecast.map(r=>(
+            <tr key={r.item.id}>
+              <td>
+                <div style={{fontWeight:600}}>{r.item.description}</div>
+                <div style={{fontSize:10,color:T.muted,fontFamily:"'Space Mono'"}}>{r.item.item_code||""}</div>
+              </td>
+              <td className="num">{fmtN(r.needed)} <span style={{fontSize:10,color:T.muted}}>{r.item.unit}</span></td>
+              <td className="num" style={{color:T.muted}}>{fmtN(r.available)}</td>
+              <td className="num"><span className="reorder-qty">{fmtN(r.shortfall)} {r.item.unit}</span></td>
+              <td className="num" style={{color:T.muted}}>{fmtR(r.shortfall*(r.item.open_cost||0))}</td>
+              <td style={{fontSize:11,color:T.muted,lineHeight:1.5}}>{r.sources.join(", ")}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table></div>
+      <div className="info-box" style={{marginTop:12}}>
+        <span style={{fontSize:11,color:T.muted}}>Estimated cost to cover job shortfalls</span>
+        <strong style={{fontFamily:"'Space Mono'",color:T.warn}}>{fmtR(forecastValue)}</strong>
+      </div>
+    </>)}
+
+  </>);
+}
+
+
+// ─── DATE UTILITIES FOR SCHEDULING ───────────────────────────────────────────
+const parseDMY = s => { if(!s) return null; const[d,m,y]=s.split("/").map(Number); return new Date(y,m-1,d); };
+const fmtDMY   = dt => `${String(dt.getDate()).padStart(2,"0")}/${String(dt.getMonth()+1).padStart(2,"0")}/${dt.getFullYear()}`;
+const addPeriod = (dt,type,n) => {
+  const d = new Date(dt.getTime());
+  if(type==="days")   d.setDate(d.getDate()+n);
+  if(type==="weeks")  d.setDate(d.getDate()+n*7);
+  if(type==="months") d.setMonth(d.getMonth()+n);
+  return d;
+};
+// End of an N-working-day window from today (skips Sat/Sun)
+const workingDaysAhead = n => {
+  const d = new Date(); d.setHours(0,0,0,0);
+  let added = 0;
+  while(added < n){
+    d.setDate(d.getDate()+1);
+    const day = d.getDay();
+    if(day!==0 && day!==6) added++;
+  }
+  return d;
+};
+const startOfToday = () => { const d=new Date(); d.setHours(0,0,0,0); return d; };
+const sameDay = (a,b) => a && b && a.getDate()===b.getDate() && a.getMonth()===b.getMonth() && a.getFullYear()===b.getFullYear();
+const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const DAY_NAMES   = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+const FORECAST_DAYS = 10; // 2 working weeks
+
+const JOB_TYPES = [
+  {id:"preventive", label:"Preventive"},
+  {id:"reactive",   label:"Reactive / Breakdown"},
+  {id:"inspection", label:"Inspection"},
+  {id:"other",      label:"Other"},
+];
+const RECURRENCE = [
+  {id:"none",   label:"Once off"},
+  {id:"days",   label:"Every N days"},
+  {id:"weeks",  label:"Every N weeks"},
+  {id:"months", label:"Every N months"},
+];
+const recurLabel = (t,n) => {
+  if(t==="none"||!n) return "Once off";
+  const unit = t==="days"?"day":t==="weeks"?"week":"month";
+  return n===1 ? `Every ${unit}` : `Every ${n} ${unit}s`;
+};
+
+// Current available stock for an item (same maths as elsewhere in the app)
+const availableStock = (item, purchases, issues) => {
+  const b   = purchases.filter(x=>x.item_id===item.id).reduce((s,x)=>s+(x.qty||0),0);
+  const iss = issues.filter(x=>x.item_id===item.id).reduce((s,x)=>s+(x.qty||0),0);
+  return (item.open_qty||0)+b-iss;
+};
+
+// ─── MATERIAL FORECAST ───────────────────────────────────────────────────────
+// Open jobs inside the window count once. Recurring templates then project
+// additional (unsaved) occurrences inside the same window so a weekly job
+// counts twice over two weeks without cluttering the calendar.
+function buildForecast({ jobs, jobMaterials, templates, templateMaterials, items, purchases, issues }) {
+  const windowEnd = workingDaysAhead(FORECAST_DAYS);
+  const todayD    = startOfToday();
+  const demand    = {};   // item_id -> { qty, sources:Set }
+
+  const add = (itemId, qty, source) => {
+    if(!demand[itemId]) demand[itemId] = { qty:0, sources:new Set() };
+    demand[itemId].qty += qty;
+    demand[itemId].sources.add(source);
+  };
+
+  // 1. Real open jobs due inside the window (overdue ones count too)
+  const openJobs = jobs.filter(j=>j.status==="scheduled"||j.status==="in_progress");
+  openJobs.forEach(job=>{
+    const due = parseDMY(job.due_date);
+    if(!due || due > windowEnd) return;
+    jobMaterials.filter(m=>m.job_id===job.id).forEach(m=>add(m.item_id, m.qty_planned||0, job.name));
+  });
+
+  // 2. Projected extra occurrences from recurring templates
+  templates.filter(t=>t.active!==false && t.recurrence_type!=="none" && t.recurrence_n>0).forEach(t=>{
+    const mats = templateMaterials.filter(m=>m.template_id===t.id);
+    if(!mats.length) return;
+    // Start from the template's open job if there is one, else its next_due
+    const openForT = openJobs.find(j=>j.template_id===t.id);
+    let cursor = openForT ? parseDMY(openForT.due_date) : parseDMY(t.next_due);
+    if(!cursor) return;
+    // Step forward; every occurrence AFTER the first that lands in the window is extra
+    let guard = 0;
+    while(guard++ < 60){
+      cursor = addPeriod(cursor, t.recurrence_type, t.recurrence_n);
+      if(cursor > windowEnd) break;
+      if(cursor < todayD) continue;
+      mats.forEach(m=>add(m.item_id, m.qty||0, `${t.name} (projected)`));
+    }
+  });
+
+  // 3. Compare against available stock
+  return Object.entries(demand).map(([itemId,d])=>{
+    const item = items.find(i=>i.id===itemId);
+    if(!item) return null;
+    const avail = availableStock(item, purchases, issues);
+    return {
+      item, needed:d.qty, available:avail,
+      shortfall: Math.max(0, d.qty - avail),
+      sources: [...d.sources],
+    };
+  }).filter(Boolean).filter(r=>r.shortfall>0).sort((a,b)=>b.shortfall-a.shortfall);
+}
+
+// ─── CALENDAR ────────────────────────────────────────────────────────────────
+function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destinations,
+                    templates, setJobs, setJobMaterials, setIssues, setTemplates, isAdmin }) {
+  const [cursor, setCursor]     = useState(()=>{ const d=new Date(); return new Date(d.getFullYear(),d.getMonth(),1); });
+  const [view, setView]         = useState("month");   // month | list
+  const [openJob, setOpenJob]   = useState(null);
+  const [showAdHoc, setShowAdHoc] = useState(false);
+
+  const todayD = startOfToday();
+
+  // Build month grid (Mon-first)
+  const grid = useMemo(()=>{
+    const first = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
+    const startPad = (first.getDay()+6)%7;              // Mon=0
+    const daysInMonth = new Date(cursor.getFullYear(), cursor.getMonth()+1, 0).getDate();
+    const cells = [];
+    for(let i=0;i<startPad;i++) cells.push(null);
+    for(let d=1;d<=daysInMonth;d++) cells.push(new Date(cursor.getFullYear(), cursor.getMonth(), d));
+    while(cells.length%7!==0) cells.push(null);
+    return cells;
+  },[cursor]);
+
+  const jobsOn = dt => jobs.filter(j=>sameDay(parseDMY(j.due_date), dt));
+
+  const statusOf = job => {
+    if(job.status==="completed") return "completed";
+    if(job.status==="cancelled") return "cancelled";
+    const due = parseDMY(job.due_date);
+    return due && due < todayD ? "overdue" : "scheduled";
+  };
+  const statusColor = s => s==="completed" ? T.ok : s==="overdue" ? T.danger : s==="cancelled" ? T.muted : T.gold;
+
+  const upcoming = useMemo(()=>{
+    return jobs
+      .filter(j=>j.status!=="cancelled")
+      .sort((a,b)=>{
+        const da=parseDMY(a.due_date), db=parseDMY(b.due_date);
+        return (da?da.getTime():0)-(db?db.getTime():0);
+      });
+  },[jobs]);
+
+  const openCount     = jobs.filter(j=>j.status==="scheduled"||j.status==="in_progress").length;
+  const overdueCount  = jobs.filter(j=>statusOf(j)==="overdue").length;
+  const doneThisMonth = jobs.filter(j=>{
+    if(j.status!=="completed"||!j.completed_date) return false;
+    const c=parseDMY(j.completed_date);
+    return c && c.getMonth()===new Date().getMonth() && c.getFullYear()===new Date().getFullYear();
+  }).length;
+
+  return (<>
+    <div className="strip">
+      <div className="strip-item"><div className="strip-label">Open Jobs</div><div className="strip-val">{openCount}</div></div>
+      <div className="strip-item"><div className="strip-label">Overdue</div>
+        <div className="strip-val" style={{color:overdueCount>0?T.danger:T.ok}}>{overdueCount}</div></div>
+      <div className="strip-item"><div className="strip-label">Done This Month</div><div className="strip-val">{doneThisMonth}</div></div>
+      <div style={{marginLeft:"auto",display:"flex",gap:8,flexWrap:"wrap"}}>
+        <button className="btn btn-ghost" onClick={()=>setView(v=>v==="month"?"list":"month")}>
+          {view==="month"?"List view":"Month view"}
+        </button>
+        <button className="btn btn-primary" onClick={()=>setShowAdHoc(true)}>+ Log Job</button>
+      </div>
+    </div>
+
+    {view==="month" ? (<>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+        <button className="btn btn-ghost btn-sm" onClick={()=>setCursor(c=>new Date(c.getFullYear(),c.getMonth()-1,1))}>&#8592; Prev</button>
+        <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:19,fontWeight:600,color:T.cream}}>
+          {MONTH_NAMES[cursor.getMonth()]} {cursor.getFullYear()}
+        </div>
+        <button className="btn btn-ghost btn-sm" onClick={()=>setCursor(c=>new Date(c.getFullYear(),c.getMonth()+1,1))}>Next &#8594;</button>
+      </div>
+
+      <div className="cal-grid">
+        {DAY_NAMES.map(d=><div key={d} className="cal-head">{d}</div>)}
+        {grid.map((dt,i)=>{
+          if(!dt) return <div key={i} className="cal-cell cal-empty"/>;
+          const dayJobs = jobsOn(dt);
+          const isToday = sameDay(dt, todayD);
+          return (
+            <div key={i} className={`cal-cell${isToday?" cal-today":""}`}>
+              <div className="cal-date">{dt.getDate()}</div>
+              {dayJobs.slice(0,3).map(j=>{
+                const st=statusOf(j);
+                return (
+                  <button key={j.id} className="cal-job" onClick={()=>setOpenJob(j)}
+                    style={{borderLeft:`3px solid ${statusColor(st)}`,
+                            color:st==="completed"?T.muted:T.cream,
+                            textDecoration:st==="completed"?"line-through":"none"}}>
+                    {j.name}
+                  </button>
+                );
+              })}
+              {dayJobs.length>3 && <div style={{fontSize:9,color:T.muted,paddingLeft:4}}>+{dayJobs.length-3} more</div>}
+            </div>
+          );
+        })}
+      </div>
+    </>) : (
+      <div className="tbl-wrap"><table className="tbl">
+        <thead><tr><th>Due</th><th>Job</th><th>Type</th><th>Where</th><th>Assigned</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          {upcoming.map(j=>{
+            const st=statusOf(j);
+            return (
+              <tr key={j.id}>
+                <td className="mono" style={{fontSize:11}}>{j.due_date}</td>
+                <td style={{fontWeight:600}}>{j.name}</td>
+                <td style={{fontSize:11,color:T.muted}}>{JOB_TYPES.find(t=>t.id===j.job_type)?.label||j.job_type}</td>
+                <td style={{fontSize:12,color:T.muted}}>{j.dest_name||"—"}</td>
+                <td style={{fontSize:12,color:T.muted}}>{j.assigned_to||"—"}</td>
+                <td>
+                  <span className="badge" style={{background:`${statusColor(st)}22`,color:statusColor(st),border:`1px solid ${statusColor(st)}55`}}>
+                    {st==="overdue"?"Overdue":st==="completed"?"Done":st==="cancelled"?"Cancelled":"Scheduled"}
+                  </span>
+                </td>
+                <td><button className="btn btn-ghost btn-sm" onClick={()=>setOpenJob(j)}>Open</button></td>
+              </tr>
+            );
+          })}
+          {upcoming.length===0&&<tr><td colSpan={7} className="empty">No jobs scheduled yet</td></tr>}
+        </tbody>
+      </table></div>
+    )}
+
+    {openJob && (
+      <JobDetail job={openJob} onClose={()=>setOpenJob(null)}
+        locId={locId} jobs={jobs} jobMaterials={jobMaterials} items={items}
+        purchases={purchases} issues={issues} templates={templates}
+        setJobs={setJobs} setJobMaterials={setJobMaterials} setIssues={setIssues}
+        setTemplates={setTemplates} isAdmin={isAdmin}/>
+    )}
+
+    {showAdHoc && (
+      <AdHocJob locId={locId} items={items} destinations={destinations}
+        setJobs={setJobs} setJobMaterials={setJobMaterials} onClose={()=>setShowAdHoc(false)}/>
+    )}
+  </>);
+}
+
+// ─── JOB DETAIL ──────────────────────────────────────────────────────────────
+function JobDetail({ job, onClose, locId, jobs, jobMaterials, items, purchases, issues,
+                     templates, setJobs, setJobMaterials, setIssues, setTemplates, isAdmin }) {
+  const [completing, setCompleting] = useState(false);
+  const mats = jobMaterials.filter(m=>m.job_id===job.id);
+  const isOpen = job.status==="scheduled"||job.status==="in_progress";
+
+  const cancel = async () => {
+    if(!window.confirm("Cancel this job?")) return;
+    try{
+      await sb.update("maint_jobs", job.id, {status:"cancelled"});
+      setJobs(p=>p.map(j=>j.id===job.id?{...j,status:"cancelled"}:j));
+      onClose();
+    }catch(e){ alert("Error: "+e.message); }
+  };
+
+  const remove = async () => {
+    if(!window.confirm("Delete this job permanently?")) return;
+    try{
+      await sb.delete("maint_jobs", job.id);
+      setJobs(p=>p.filter(j=>j.id!==job.id));
+      setJobMaterials(p=>p.filter(m=>m.job_id!==job.id));
+      onClose();
+    }catch(e){ alert("Error: "+e.message); }
+  };
+
+  if(completing) return (
+    <CompleteJob job={job} mats={mats} items={items} purchases={purchases} issues={issues}
+      locId={locId} templates={templates}
+      setJobs={setJobs} setJobMaterials={setJobMaterials} setIssues={setIssues} setTemplates={setTemplates}
+      onDone={()=>{setCompleting(false);onClose();}} onBack={()=>setCompleting(false)}/>
+  );
+
+  return (
+    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal">
+        <div className="modal-title">{job.name}</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 16px",marginBottom:14}}>
+          {[["Due date",job.due_date],
+            ["Type",JOB_TYPES.find(t=>t.id===job.job_type)?.label||job.job_type],
+            ["Where",job.dest_name||"—"],
+            ["Assigned to",job.assigned_to||"—"]].map(([l,v])=>(
+            <div key={l} style={{padding:"7px 0",borderBottom:`1px solid ${T.border}`}}>
+              <div style={{fontSize:9,letterSpacing:".12em",textTransform:"uppercase",color:T.muted,fontWeight:600,marginBottom:2}}>{l}</div>
+              <div style={{fontSize:13,fontWeight:600,color:T.cream}}>{v}</div>
+            </div>
+          ))}
+        </div>
+
+        {job.description && (
+          <div style={{background:"rgba(0,0,0,.25)",border:`1px solid ${T.border}`,borderRadius:7,padding:"11px 13px",marginBottom:14}}>
+            <div style={{fontSize:9,letterSpacing:".1em",textTransform:"uppercase",color:T.muted,fontWeight:600,marginBottom:5}}>Description</div>
+            <div style={{fontSize:13,color:T.cream,lineHeight:1.6,whiteSpace:"pre-wrap"}}>{job.description}</div>
+          </div>
+        )}
+
+        <div className="section-title">Materials Required</div>
+        {mats.length===0 ? (
+          <div style={{fontSize:12,color:T.muted,marginBottom:14}}>No materials planned for this job.</div>
+        ) : (
+          <div className="tbl-wrap" style={{marginBottom:14}}><table className="tbl" style={{minWidth:0}}>
+            <thead><tr><th>Item</th><th className="num">Needed</th><th className="num">In Stock</th><th>Status</th></tr></thead>
+            <tbody>
+              {mats.map(m=>{
+                const item = items.find(i=>i.id===m.item_id);
+                if(!item) return null;
+                const avail = availableStock(item, purchases, issues);
+                const short = (m.qty_planned||0) - avail;
+                return (
+                  <tr key={m.id}>
+                    <td style={{fontWeight:600}}>{item.description}</td>
+                    <td className="num">{fmtN(m.qty_planned)} <span style={{fontSize:10,color:T.muted}}>{item.unit}</span></td>
+                    <td className="num" style={{color:T.muted}}>{fmtN(avail)}</td>
+                    <td>{short>0
+                      ? <span className="badge badge-bad">Short {fmtN(short)}</span>
+                      : <span className="badge badge-ok">Available</span>}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table></div>
+        )}
+
+        {job.status==="completed" && (
+          <div className="info-box" style={{background:"rgba(90,155,114,.1)",border:`1px solid rgba(90,155,114,.3)`}}>
+            <span style={{fontSize:11,color:T.muted}}>Completed</span>
+            <strong style={{color:T.ok,fontFamily:"'Space Mono'"}}>{job.completed_date}</strong>
+          </div>
+        )}
+        {job.completion_notes && (
+          <div style={{fontSize:12,color:T.muted,marginBottom:12}}>
+            <strong style={{color:T.cream}}>Notes:</strong> {job.completion_notes}
+          </div>
+        )}
+
+        <div style={{display:"flex",gap:9,flexWrap:"wrap"}}>
+          {isOpen && <button className="btn btn-primary" onClick={()=>setCompleting(true)}>Complete Job</button>}
+          {isOpen && isAdmin && <button className="btn btn-ghost" onClick={cancel}>Cancel Job</button>}
+          {isAdmin && <button className="btn btn-danger" onClick={remove}>Delete</button>}
+          <button className="btn btn-ghost" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── COMPLETE JOB ────────────────────────────────────────────────────────────
+function CompleteJob({ job, mats, items, purchases, issues, locId, templates,
+                       setJobs, setJobMaterials, setIssues, setTemplates, onDone, onBack }) {
+  const [date, setDate]   = useState(today());
+  const [notes, setNotes] = useState("");
+  const [used, setUsed]   = useState(()=>{
+    const m={}; mats.forEach(x=>m[x.id]=String(x.qty_planned||0)); return m;
+  });
+  const [busy, setBusy]   = useState(false);
+
+  const save = async () => {
+    setBusy(true);
+    try{
+      // 1. Write a stock issue for each material actually used
+      const newIssues = [];
+      for(const m of mats){
+        const qty = parseFloat(used[m.id])||0;
+        if(qty<=0) continue;
+        const row = {
+          id: uid(), location_id: locId, item_id: m.item_id, date,
+          qty, destination_id: job.destination_id||null,
+          dest_name: job.dest_name||null,
+          notes: `Job: ${job.name}`,
+        };
+        await sb.insert("maint_issues", row);
+        newIssues.push(row);
+        await sb.update("maint_job_materials", m.id, {qty_used:qty});
+      }
+      if(newIssues.length) setIssues(p=>[...p, ...newIssues]);
+      setJobMaterials(p=>p.map(m=>mats.find(x=>x.id===m.id)
+        ? {...m, qty_used: parseFloat(used[m.id])||0} : m));
+
+      // 2. Mark this job complete
+      await sb.update("maint_jobs", job.id, {status:"completed", completed_date:date, completion_notes:notes||null});
+      setJobs(p=>p.map(j=>j.id===job.id?{...j,status:"completed",completed_date:date,completion_notes:notes||null}:j));
+
+      // 3. If recurring, schedule the next one from the ACTUAL completion date
+      const tpl = templates.find(t=>t.id===job.template_id);
+      if(tpl && tpl.recurrence_type!=="none" && tpl.recurrence_n>0 && tpl.active!==false){
+        const nextDue = fmtDMY(addPeriod(parseDMY(date), tpl.recurrence_type, tpl.recurrence_n));
+        const nextJob = {
+          id: uid(), location_id: locId, template_id: tpl.id, name: tpl.name,
+          description: tpl.description||null, job_type: tpl.job_type||"preventive",
+          destination_id: tpl.destination_id||null, dest_name: tpl.dest_name||null,
+          assigned_to: tpl.assigned_to||null, due_date: nextDue, status:"scheduled",
+        };
+        await sb.insert("maint_jobs", nextJob);
+        setJobs(p=>[...p, nextJob]);
+
+        // Copy the template's material list onto the new job
+        const tplMats = await sb.select("maint_template_materials", `template_id=eq.${tpl.id}`);
+        const newMats = [];
+        for(const tm of tplMats){
+          const row = {id:uid(), job_id:nextJob.id, item_id:tm.item_id, qty_planned:+tm.qty};
+          await sb.insert("maint_job_materials", row);
+          newMats.push(row);
+        }
+        if(newMats.length) setJobMaterials(p=>[...p, ...newMats]);
+
+        await sb.update("maint_job_templates", tpl.id, {next_due: nextDue});
+        setTemplates(p=>p.map(t=>t.id===tpl.id?{...t,next_due:nextDue}:t));
+      }
+
+      onDone();
+    }catch(e){ alert("Could not complete job: "+e.message); }
+    finally{ setBusy(false); }
+  };
+
+  const tpl = templates.find(t=>t.id===job.template_id);
+  const willRepeat = tpl && tpl.recurrence_type!=="none" && tpl.recurrence_n>0;
+  const nextPreview = willRepeat && date ? fmtDMY(addPeriod(parseDMY(date), tpl.recurrence_type, tpl.recurrence_n)) : null;
+
+  return (
+    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onBack()}>
+      <div className="modal">
+        <div className="modal-title">Complete <span>{job.name}</span></div>
+
+        <div className="field"><label>Completion Date</label>
+          <DateField value={date} onChange={setDate}/>
+        </div>
+
+        {mats.length>0 && (<>
+          <div className="section-title">Materials Used</div>
+          <div style={{fontSize:11,color:T.muted,marginBottom:10,lineHeight:1.5}}>
+            Pre-filled with planned quantities. Adjust to what was actually used — this issues the stock.
+          </div>
+          <div className="tbl-wrap" style={{marginBottom:14}}><table className="tbl" style={{minWidth:0}}>
+            <thead><tr><th>Item</th><th className="num">Planned</th><th className="num">Actually Used</th></tr></thead>
+            <tbody>
+              {mats.map(m=>{
+                const item = items.find(i=>i.id===m.item_id);
+                if(!item) return null;
+                return (
+                  <tr key={m.id}>
+                    <td style={{fontWeight:600}}>{item.description} <span style={{fontSize:10,color:T.muted}}>({item.unit})</span></td>
+                    <td className="num" style={{color:T.muted}}>{fmtN(m.qty_planned)}</td>
+                    <td className="num">
+                      <input className="count-input" type="number" value={used[m.id]??""}
+                        onChange={e=>setUsed(u=>({...u,[m.id]:e.target.value}))}/>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table></div>
+        </>)}
+
+        <div className="field"><label>Completion Notes</label>
+          <textarea rows={3} value={notes} onChange={e=>setNotes(e.target.value)}
+            placeholder="What was done, anything to flag..."/>
+        </div>
+
+        {willRepeat && (
+          <div className="info-box">
+            <span style={{fontSize:11,color:T.muted}}>Next occurrence will be scheduled for</span>
+            <strong style={{fontFamily:"'Space Mono'",color:T.gold}}>{nextPreview}</strong>
+          </div>
+        )}
+
+        <div style={{display:"flex",gap:9}}>
+          <button className="btn btn-primary" onClick={save} disabled={busy}>
+            {busy?"Saving...":"Confirm Complete"}
+          </button>
+          <button className="btn btn-ghost" onClick={onBack} disabled={busy}>Back</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── AD-HOC JOB ──────────────────────────────────────────────────────────────
+function AdHocJob({ locId, items, destinations, setJobs, setJobMaterials, onClose }) {
+  const locDests = destinations.filter(d=>d.location_id===locId).sort((a,b)=>a.sort_order-b.sort_order);
+  const blank = {name:"",description:"",job_type:"reactive",destination_id:"",assigned_to:"",due_date:today()};
+  const [form,setForm] = useState(blank);
+  const [rows,setRows] = useState([]);   // {item_id, qty}
+  const [busy,setBusy] = useState(false);
+  const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
+
+  const save = async () => {
+    if(!form.name.trim()) return;
+    setBusy(true);
+    try{
+      const dest = locDests.find(d=>d.id===form.destination_id);
+      const job = {
+        id:uid(), location_id:locId, template_id:null, name:form.name.trim(),
+        description:form.description||null, job_type:form.job_type,
+        destination_id:form.destination_id||null, dest_name:dest?.name||null,
+        assigned_to:form.assigned_to||null, due_date:form.due_date, status:"scheduled",
+      };
+      await sb.insert("maint_jobs", job);
+      setJobs(p=>[...p, job]);
+
+      const newMats=[];
+      for(const r of rows){
+        if(!r.item_id||!(parseFloat(r.qty)>0)) continue;
+        const m={id:uid(), job_id:job.id, item_id:r.item_id, qty_planned:parseFloat(r.qty)};
+        await sb.insert("maint_job_materials", m);
+        newMats.push(m);
+      }
+      if(newMats.length) setJobMaterials(p=>[...p,...newMats]);
+      onClose();
+    }catch(e){ alert("Save failed: "+e.message); }
+    finally{ setBusy(false); }
+  };
+
+  return (
+    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal">
+        <div className="modal-title">Log <span>Job</span></div>
+        <div className="field"><label>Job Name</label>
+          <input type="text" value={form.name} onChange={f("name")} placeholder="e.g. Replace geyser element Room 2"/>
+        </div>
+        <div className="grid2">
+          <div className="field"><label>Due Date</label>
+            <DateField value={form.due_date} onChange={v=>setForm(p=>({...p,due_date:v}))}/>
+          </div>
+          <div className="field"><label>Job Type</label>
+            <select value={form.job_type} onChange={f("job_type")}>
+              {JOB_TYPES.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}
+            </select>
+          </div>
+          <div className="field"><label>Where</label>
+            <select value={form.destination_id} onChange={f("destination_id")}>
+              <option value="">-- Select --</option>
+              {locDests.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </div>
+          <div className="field"><label>Assigned To</label>
+            <input type="text" value={form.assigned_to} onChange={f("assigned_to")} placeholder="Name"/>
+          </div>
+        </div>
+        <div className="field"><label>Description</label>
+          <textarea rows={2} value={form.description} onChange={f("description")}/>
+        </div>
+
+        <MaterialPicker items={items} rows={rows} setRows={setRows}/>
+
+        <div style={{display:"flex",gap:9,marginTop:4}}>
+          <button className="btn btn-primary" onClick={save} disabled={busy}>{busy?"Saving...":"Save Job"}</button>
+          <button className="btn btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── MATERIAL PICKER (shared) ────────────────────────────────────────────────
+function MaterialPicker({ items, rows, setRows }) {
+  const add    = ()=>setRows(r=>[...r,{item_id:"",qty:""}]);
+  const upd    = (i,k,v)=>setRows(r=>r.map((x,j)=>j===i?{...x,[k]:v}:x));
+  const remove = i=>setRows(r=>r.filter((_,j)=>j!==i));
+  return (
+    <div style={{marginBottom:12}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+        <div className="section-title" style={{margin:0}}>Materials Needed</div>
+        <button className="btn btn-ghost btn-sm" onClick={add}>+ Add Material</button>
+      </div>
+      {rows.length===0 && <div style={{fontSize:11,color:T.muted}}>No materials added.</div>}
+      {rows.map((r,i)=>(
+        <div key={i} style={{display:"flex",gap:7,marginBottom:7,alignItems:"center"}}>
+          <select value={r.item_id} onChange={e=>upd(i,"item_id",e.target.value)}
+            style={{flex:1,background:"rgba(0,0,0,.25)",border:`1px solid ${T.border}`,borderRadius:6,
+              padding:"9px 10px",color:T.cream,fontFamily:"'Inter',sans-serif",fontSize:14,outline:"none"}}>
+            <option value="">-- Select item --</option>
+            {items.map(it=><option key={it.id} value={it.id}>{it.description} ({it.unit})</option>)}
+          </select>
+          <input className="count-input" type="number" placeholder="Qty" value={r.qty}
+            onChange={e=>upd(i,"qty",e.target.value)}/>
+          <button className="btn btn-danger btn-sm" onClick={()=>remove(i)}>x</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── JOB TEMPLATES (Admin) ───────────────────────────────────────────────────
+function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTemplateMaterials,
+                        items, destinations, jobs, setJobs, jobMaterials, setJobMaterials }) {
+  const locDests = destinations.filter(d=>d.location_id===locId).sort((a,b)=>a.sort_order-b.sort_order);
+  const [showForm,setShowForm] = useState(false);
+  const [editId,setEditId]     = useState(null);
+  const blank = {name:"",description:"",job_type:"preventive",destination_id:"",assigned_to:"",
+                 recurrence_type:"months",recurrence_n:"1",next_due:today()};
+  const [form,setForm] = useState(blank);
+  const [rows,setRows] = useState([]);
+  const [busy,setBusy] = useState(false);
+  const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
+
+  const openAdd = ()=>{ setForm({...blank,next_due:today()}); setRows([]); setEditId(null); setShowForm(true); };
+  const openEdit = t => {
+    setForm({name:t.name,description:t.description||"",job_type:t.job_type||"preventive",
+             destination_id:t.destination_id||"",assigned_to:t.assigned_to||"",
+             recurrence_type:t.recurrence_type||"none",recurrence_n:String(t.recurrence_n||0),
+             next_due:t.next_due||today()});
+    setRows(templateMaterials.filter(m=>m.template_id===t.id).map(m=>({id:m.id,item_id:m.item_id,qty:String(m.qty)})));
+    setEditId(t.id); setShowForm(true);
+  };
+
+  const save = async () => {
+    if(!form.name.trim()) return;
+    setBusy(true);
+    try{
+      const dest = locDests.find(d=>d.id===form.destination_id);
+      const row = {
+        location_id:locId, name:form.name.trim(), description:form.description||null,
+        job_type:form.job_type, destination_id:form.destination_id||null,
+        dest_name:dest?.name||null, assigned_to:form.assigned_to||null,
+        recurrence_type:form.recurrence_type,
+        recurrence_n:form.recurrence_type==="none"?0:(parseInt(form.recurrence_n)||1),
+        next_due:form.next_due, active:true,
+      };
+
+      let tplId = editId;
+      if(editId){
+        await sb.update("maint_job_templates", editId, row);
+        setTemplates(p=>p.map(t=>t.id===editId?{...t,...row}:t));
+        // Replace material lines
+        const old = templateMaterials.filter(m=>m.template_id===editId);
+        for(const o of old) await sb.delete("maint_template_materials", o.id);
+        setTemplateMaterials(p=>p.filter(m=>m.template_id!==editId));
+      }else{
+        tplId = uid();
+        await sb.insert("maint_job_templates", {...row, id:tplId});
+        setTemplates(p=>[...p,{...row,id:tplId}]);
+      }
+
+      const newMats=[];
+      for(const r of rows){
+        if(!r.item_id||!(parseFloat(r.qty)>0)) continue;
+        const m={id:uid(), template_id:tplId, item_id:r.item_id, qty:parseFloat(r.qty)};
+        await sb.insert("maint_template_materials", m);
+        newMats.push(m);
+      }
+      if(newMats.length) setTemplateMaterials(p=>[...p,...newMats]);
+
+      // For a brand new template, create its first scheduled job right away
+      if(!editId){
+        const job = {
+          id:uid(), location_id:locId, template_id:tplId, name:row.name,
+          description:row.description, job_type:row.job_type,
+          destination_id:row.destination_id, dest_name:row.dest_name,
+          assigned_to:row.assigned_to, due_date:row.next_due, status:"scheduled",
+        };
+        await sb.insert("maint_jobs", job);
+        setJobs(p=>[...p,job]);
+        const jm=[];
+        for(const m of newMats){
+          const x={id:uid(), job_id:job.id, item_id:m.item_id, qty_planned:m.qty};
+          await sb.insert("maint_job_materials", x);
+          jm.push(x);
+        }
+        if(jm.length) setJobMaterials(p=>[...p,...jm]);
+      }
+
+      setShowForm(false);
+    }catch(e){ alert("Save failed: "+e.message); }
+    finally{ setBusy(false); }
+  };
+
+  const remove = async t => {
+    if(!window.confirm(`Remove template "${t.name}"?\n\nScheduled jobs already created from it are kept.`)) return;
+    try{
+      await sb.delete("maint_job_templates", t.id);
+      setTemplates(p=>p.filter(x=>x.id!==t.id));
+      setTemplateMaterials(p=>p.filter(m=>m.template_id!==t.id));
+    }catch(e){ alert("Error: "+e.message); }
+  };
+
+  return (<>
+    <div className="strip">
+      <div className="strip-item"><div className="strip-label">Templates</div><div className="strip-val">{templates.length}</div></div>
+      <div className="strip-item"><div className="strip-label">Recurring</div>
+        <div className="strip-val">{templates.filter(t=>t.recurrence_type!=="none").length}</div></div>
+      <div style={{marginLeft:"auto"}}><button className="btn btn-primary" onClick={openAdd}>+ Add Template</button></div>
+    </div>
+    <div style={{fontSize:12,color:T.muted,marginBottom:14,lineHeight:1.6}}>
+      Templates define recurring maintenance. Saving a new template schedules its first job automatically.
+      Each time a job is completed, the next one is scheduled from the actual completion date.
+    </div>
+    <div className="tbl-wrap"><table className="tbl">
+      <thead><tr><th>Job Name</th><th>Type</th><th>Where</th><th>Assigned</th><th>Repeats</th><th>Next Due</th><th className="num">Materials</th><th></th></tr></thead>
+      <tbody>
+        {templates.map(t=>(
+          <tr key={t.id}>
+            <td style={{fontWeight:600}}>{t.name}</td>
+            <td style={{fontSize:11,color:T.muted}}>{JOB_TYPES.find(x=>x.id===t.job_type)?.label||t.job_type}</td>
+            <td style={{fontSize:12,color:T.muted}}>{t.dest_name||"—"}</td>
+            <td style={{fontSize:12,color:T.muted}}>{t.assigned_to||"—"}</td>
+            <td><span className="badge badge-neu">{recurLabel(t.recurrence_type,t.recurrence_n)}</span></td>
+            <td className="mono" style={{fontSize:11}}>{t.next_due||"—"}</td>
+            <td className="num" style={{color:T.muted}}>{templateMaterials.filter(m=>m.template_id===t.id).length}</td>
+            <td style={{display:"flex",gap:5}}>
+              <button className="btn btn-ghost btn-sm" onClick={()=>openEdit(t)}>Edit</button>
+              <button className="btn btn-danger btn-sm" onClick={()=>remove(t)}>x</button>
+            </td>
+          </tr>
+        ))}
+        {templates.length===0&&<tr><td colSpan={8} className="empty">No job templates yet for this location</td></tr>}
+      </tbody>
+    </table></div>
+
+    {showForm&&(
+      <div className="overlay" onClick={e=>e.target===e.currentTarget&&setShowForm(false)}>
+        <div className="modal">
+          <div className="modal-title">{editId?"Edit":"Add"} <span>Job Template</span></div>
+          <div className="field"><label>Job Name</label>
+            <input type="text" value={form.name} onChange={f("name")} placeholder="e.g. Service generator"/>
+          </div>
+          <div className="grid2">
+            <div className="field"><label>Job Type</label>
+              <select value={form.job_type} onChange={f("job_type")}>
+                {JOB_TYPES.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}
+              </select>
+            </div>
+            <div className="field"><label>Where</label>
+              <select value={form.destination_id} onChange={f("destination_id")}>
+                <option value="">-- Select --</option>
+                {locDests.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            </div>
+            <div className="field"><label>Repeats</label>
+              <select value={form.recurrence_type} onChange={f("recurrence_type")}>
+                {RECURRENCE.map(r=><option key={r.id} value={r.id}>{r.label}</option>)}
+              </select>
+            </div>
+            {form.recurrence_type!=="none" && (
+              <div className="field"><label>Interval (N)</label>
+                <input type="number" min="1" value={form.recurrence_n} onChange={f("recurrence_n")}/>
+              </div>
+            )}
+            <div className="field"><label>First / Next Due</label>
+              <DateField value={form.next_due} onChange={v=>setForm(p=>({...p,next_due:v}))}/>
+            </div>
+            <div className="field"><label>Assigned To</label>
+              <input type="text" value={form.assigned_to} onChange={f("assigned_to")} placeholder="Name"/>
+            </div>
+          </div>
+          <div className="field"><label>Description</label>
+            <textarea rows={2} value={form.description} onChange={f("description")}/>
+          </div>
+
+          <MaterialPicker items={items} rows={rows} setRows={setRows}/>
+
+          {form.recurrence_type!=="none" && (
+            <div className="info-box">
+              <span style={{fontSize:11,color:T.muted}}>Schedule</span>
+              <strong style={{color:T.gold,fontSize:12}}>{recurLabel(form.recurrence_type, parseInt(form.recurrence_n)||1)}</strong>
+            </div>
+          )}
+
+          <div style={{display:"flex",gap:9}}>
+            <button className="btn btn-primary" onClick={save} disabled={busy}>{busy?"Saving...":(editId?"Save Changes":"Create Template")}</button>
+            <button className="btn btn-ghost" onClick={()=>setShowForm(false)} disabled={busy}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    )}
   </>);
 }
 
 // ─── PAGES ───────────────────────────────────────────────────────────────────
 const PAGES=[
   {id:"dashboard",   label:"Dashboard",    section:"Overview",   adminOnly:false},
+  {id:"calendar",    label:"Calendar",     section:"Schedule",   adminOnly:false},
+  {id:"templates",   label:"Job Templates",section:"Schedule",   adminOnly:true},
   {id:"purchases",   label:"Purchases",    section:"Stock",      adminOnly:false},
   {id:"issues",      label:"Issues",       section:"Stock",      adminOnly:false},
   {id:"count",       label:"Stock Count",  section:"Stock",      adminOnly:false},
@@ -756,7 +1586,9 @@ export default function App() {
   const [page,          setPage]         = useState("dashboard");
   const [locId,         setLocId]        = useState("ZC");
   const [locPickerOpen, setLocPickerOpen]= useState(false);
-  const [allData,       setAllData]      = useState({items:{},purchases:{},issues:{},counts:{},destinations:{}});
+  const [allData,       setAllData]      = useState({items:{},purchases:{},issues:{},counts:{},destinations:{},jobs:{},templates:{}});
+  const [jobMaterials,     setJobMaterials]     = useState([]);
+  const [templateMaterials,setTemplateMaterials]= useState([]);
   const [loading,       setLoading]      = useState(true);
   const [loadErr,       setLoadErr]      = useState(null);
   const isAdmin = role==="admin";
@@ -766,12 +1598,16 @@ export default function App() {
   const loadAll=useCallback(async()=>{
     setLoading(true);setLoadErr(null);
     try{
-      const[itemRows,purchRows,issueRows,countRows,destRows]=await Promise.all([
+      const[itemRows,purchRows,issueRows,countRows,destRows,jobRows,tplRows,jobMatRows,tplMatRows]=await Promise.all([
         sb.select("maint_items","active=eq.true&order=sort_order.asc"),
         sb.select("maint_purchases"),
         sb.select("maint_issues"),
         sb.select("maint_stock_counts"),
         sb.select("maint_destinations","order=sort_order.asc"),
+        sb.select("maint_jobs"),
+        sb.select("maint_job_templates","active=eq.true"),
+        sb.select("maint_job_materials"),
+        sb.select("maint_template_materials"),
       ]);
       const byLoc=arr=>{
         const m={};LOCATIONS.forEach(l=>m[l.id]=[]);
@@ -783,7 +1619,11 @@ export default function App() {
         issues:byLoc(issueRows.map(r=>({...r,qty:+r.qty}))),
         counts:byLoc(countRows.map(r=>({...r,count_qty:+r.count_qty}))),
         destinations:byLoc(destRows),
+        jobs:byLoc(jobRows),
+        templates:byLoc(tplRows.map(r=>({...r,recurrence_n:+r.recurrence_n}))),
       });
+      setJobMaterials(jobMatRows.map(r=>({...r,qty_planned:+r.qty_planned,qty_used:r.qty_used==null?null:+r.qty_used})));
+      setTemplateMaterials(tplMatRows.map(r=>({...r,qty:+r.qty})));
     }catch(e){setLoadErr(e.message);}
     finally{setLoading(false);}
   },[]);
@@ -797,6 +1637,8 @@ export default function App() {
   const setPurchases    = mkSetter("purchases");
   const setIssues       = mkSetter("issues");
   const setCounts       = mkSetter("counts");
+  const setJobs         = mkSetter("jobs");
+  const setTemplates    = mkSetter("templates");
   // Destinations setter needs to update across all locs since Destinations component gets all of them
   const setDestinations = fn => setAllData(d=>{
     const updated = typeof fn==="function" ? fn(d.destinations[locId]||[]) : fn;
@@ -830,6 +1672,8 @@ export default function App() {
   const counts       = allData.counts[locId]      ||[];
   const destinations = allData.destinations[locId]||[];
   const allDests     = Object.values(allData.destinations).flat();
+  const jobs         = allData.jobs[locId]      ||[];
+  const templates    = allData.templates[locId] ||[];
 
   const visiblePages = PAGES.filter(p=>isAdmin||!p.adminOnly);
   const sections     = [...new Set(visiblePages.map(p=>p.section))];
@@ -839,9 +1683,13 @@ export default function App() {
   const now          = new Date();
   const monthLabel   = now.toLocaleString("en-ZA",{month:"long",year:"numeric"}).toUpperCase();
   const footerDate   = now.toLocaleString("en-ZA",{month:"short",year:"numeric"});
-  const BOTTOM_NAV   = isAdmin
-    ? [{id:"dashboard",label:"Dashboard"},{id:"purchases",label:"Purchases"},{id:"issues",label:"Issues"},{id:"count",label:"Count"},{id:"orders",label:"Orders"}]
-    : [{id:"purchases",label:"Purchases"},{id:"issues",label:"Issues"},{id:"count",label:"Count"},{id:"orders",label:"Orders"}];
+  const BOTTOM_NAV   = [
+    {id:"calendar", label:"Calendar"},
+    {id:"purchases",label:"Purchases"},
+    {id:"issues",   label:"Issues"},
+    {id:"count",    label:"Count"},
+    {id:"orders",   label:"Orders"},
+  ];
 
   return (<><style>{css}</style>
     <div className="shell">
@@ -936,7 +1784,16 @@ export default function App() {
           {page==="purchases"    && <Purchases locId={locId} items={items} purchases={purchases} setPurchases={setPurchases} isAdmin={isAdmin}/>}
           {page==="issues"       && <Issues locId={locId} items={items} issues={issues} setIssues={setIssues} destinations={destinations} isAdmin={isAdmin}/>}
           {page==="count"        && <StockCount locId={locId} items={items} purchases={purchases} issues={issues} counts={counts} setCounts={setCounts}/>}
-          {page==="orders"       && <Orders items={items} purchases={purchases} issues={issues} counts={counts}/>}
+          {page==="orders"       && <Orders items={items} purchases={purchases} issues={issues} counts={counts}
+                                       jobs={jobs} jobMaterials={jobMaterials} templates={templates} templateMaterials={templateMaterials}/>}
+          {page==="calendar"     && <Calendar locId={locId} jobs={jobs} jobMaterials={jobMaterials} items={items}
+                                       purchases={purchases} issues={issues} destinations={destinations}
+                                       templates={templates} setJobs={setJobs} setJobMaterials={setJobMaterials}
+                                       setIssues={setIssues} setTemplates={setTemplates} isAdmin={isAdmin}/>}
+          {page==="templates"    && isAdmin && <JobTemplates locId={locId} templates={templates} setTemplates={setTemplates}
+                                       templateMaterials={templateMaterials} setTemplateMaterials={setTemplateMaterials}
+                                       items={items} destinations={allDests} jobs={jobs} setJobs={setJobs}
+                                       jobMaterials={jobMaterials} setJobMaterials={setJobMaterials}/>}
           {page==="items"        && isAdmin && <StockItems locId={locId} items={items} setItems={setItems}/>}
           {page==="destinations" && isAdmin && <Destinations locId={locId} destinations={allDests} setDestinations={setDestinations}/>}
         </div>
