@@ -773,6 +773,8 @@ function Orders({ items, purchases, issues, counts, jobs, jobMaterials, template
     <div className="section-title" style={{marginTop:26}}>Required For Scheduled Jobs</div>
     <div style={{fontSize:12,color:T.muted,marginBottom:12,lineHeight:1.6}}>
       Materials needed by jobs due in the next {FORECAST_DAYS} working days, beyond what is currently in stock.
+      Sorted by deadline &mdash; the <strong style={{color:T.cream}}>Needed By</strong> date is when the earliest
+      job needing that item is scheduled, so stock has to be on site by then.
       Recurring jobs are counted for every occurrence that falls inside the window.
       This list is separate from the one above &mdash; an item can appear in both.
     </div>
@@ -783,7 +785,8 @@ function Orders({ items, purchases, issues, counts, jobs, jobMaterials, template
     ):(<>
       <div className="tbl-wrap"><table className="tbl">
         <thead><tr><th>Item</th><th className="num">Needed</th><th className="num">In Stock</th>
-          <th className="num">Short By</th><th className="num">Est. Cost</th><th>Required By</th></tr></thead>
+          <th className="num">Short By</th><th className="num">Est. Cost</th>
+          <th>Needed By</th><th>Scheduled Jobs</th></tr></thead>
         <tbody>
           {forecast.map(r=>(
             <tr key={r.item.id}>
@@ -795,7 +798,27 @@ function Orders({ items, purchases, issues, counts, jobs, jobMaterials, template
               <td className="num" style={{color:T.muted}}>{fmtN(r.available)}</td>
               <td className="num"><span className="reorder-qty">{fmtN(r.shortfall)} {r.item.unit}</span></td>
               <td className="num" style={{color:T.muted}}>{fmtR(r.shortfall*(r.item.open_cost||0))}</td>
-              <td style={{fontSize:11,color:T.muted,lineHeight:1.5}}>{r.sources.join(", ")}</td>
+              <td style={{whiteSpace:"nowrap"}}>
+                {r.neededBy ? (<>
+                  <div className="mono" style={{fontSize:12,fontWeight:700,
+                    color: r.daysUntil<=0 ? T.danger : r.daysUntil<=3 ? T.warn : T.cream}}>
+                    {r.neededBy}
+                  </div>
+                  <div style={{fontSize:10,color:T.muted,marginTop:1}}>
+                    {r.daysUntil<0  ? `${Math.abs(r.daysUntil)} day${Math.abs(r.daysUntil)===1?"":"s"} overdue`
+                     : r.daysUntil===0 ? "today"
+                     : `in ${r.daysUntil} day${r.daysUntil===1?"":"s"}`}
+                  </div>
+                </>) : <span style={{color:T.border}}>&mdash;</span>}
+              </td>
+              <td style={{fontSize:11,color:T.muted,lineHeight:1.6,minWidth:170}}>
+                {r.sources.map((s,i)=>(
+                  <div key={i}>
+                    <span className="mono" style={{color:T.muted}}>{s.date}</span>
+                    {"  "}{s.name}
+                  </div>
+                ))}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -871,10 +894,11 @@ function buildForecast({ jobs, jobMaterials, templates, templateMaterials, items
   const todayD    = startOfToday();
   const demand    = {};   // item_id -> { qty, sources:Set }
 
-  const add = (itemId, qty, source) => {
-    if(!demand[itemId]) demand[itemId] = { qty:0, sources:new Set() };
+  const add = (itemId, qty, name, date) => {
+    if(!demand[itemId]) demand[itemId] = { qty:0, sources:new Map() };
     demand[itemId].qty += qty;
-    demand[itemId].sources.add(source);
+    // key on job + date so the same job on two dates shows as two lines
+    demand[itemId].sources.set(`${name}|${date}`, { name, date });
   };
 
   // 1. Real open jobs due inside the window (overdue ones count too)
@@ -882,7 +906,7 @@ function buildForecast({ jobs, jobMaterials, templates, templateMaterials, items
   openJobs.forEach(job=>{
     const due = parseDMY(job.due_date);
     if(!due || due > windowEnd) return;
-    jobMaterials.filter(m=>m.job_id===job.id).forEach(m=>add(m.item_id, m.qty_planned||0, job.name));
+    jobMaterials.filter(m=>m.job_id===job.id).forEach(m=>add(m.item_id, m.qty_planned||0, job.name, job.due_date));
   });
 
   // 2. Projected extra occurrences from recurring templates
@@ -899,7 +923,7 @@ function buildForecast({ jobs, jobMaterials, templates, templateMaterials, items
       cursor = addPeriod(cursor, t.recurrence_type, t.recurrence_n);
       if(cursor > windowEnd) break;
       if(cursor < todayD) continue;
-      mats.forEach(m=>add(m.item_id, m.qty||0, `${t.name} (projected)`));
+      mats.forEach(m=>add(m.item_id, m.qty||0, `${t.name} (projected)`, fmtDMY(cursor)));
     }
   });
 
@@ -908,12 +932,24 @@ function buildForecast({ jobs, jobMaterials, templates, templateMaterials, items
     const item = items.find(i=>i.id===itemId);
     if(!item) return null;
     const avail = availableStock(item, purchases, issues);
+    const sources = [...d.sources.values()].sort((a,b)=>{
+      const da=parseDMY(a.date), db=parseDMY(b.date);
+      return (da?da.getTime():0)-(db?db.getTime():0);
+    });
+    const neededBy = sources.length ? sources[0].date : null;
     return {
       item, needed:d.qty, available:avail,
       shortfall: Math.max(0, d.qty - avail),
-      sources: [...d.sources],
+      sources, neededBy,
+      daysUntil: neededBy ? Math.round((parseDMY(neededBy) - todayD)/86400000) : null,
     };
-  }).filter(Boolean).filter(r=>r.shortfall>0).sort((a,b)=>b.shortfall-a.shortfall);
+  }).filter(Boolean).filter(r=>r.shortfall>0).sort((a,b)=>{
+    // Most urgent deadline first, then biggest shortfall
+    const da=parseDMY(a.neededBy), db=parseDMY(b.neededBy);
+    const ta=da?da.getTime():Infinity, tb=db?db.getTime():Infinity;
+    if(ta!==tb) return ta-tb;
+    return b.shortfall-a.shortfall;
+  });
 }
 
 // ─── CALENDAR ────────────────────────────────────────────────────────────────
