@@ -523,7 +523,14 @@ function Purchases({ locId, items, purchases, setPurchases, isAdmin }) {
 }
 
 // ─── ISSUES ──────────────────────────────────────────────────────────────────
-function Issues({ locId, items, issues, setIssues, destinations, isAdmin }) {
+function Issues({ locId, items, issues, setIssues, destinations, purchases, jobs, isAdmin }) {
+  const [destDetail,setDestDetail] = useState(null);
+  const openDest = (iss) => {
+    const rows = buildDestinationCosts({destinations, issues, items, purchases:purchases||[], jobs:jobs||[]});
+    const key  = iss.destination_id || null;
+    const hit  = rows.find(r => key ? r.id===key : r.name===(iss.dest_name||"Unassigned"));
+    if (hit) setDestDetail(hit);
+  };
   const locDests = destinations.filter(d=>d.location_id===locId).sort((a,b)=>a.sort_order-b.sort_order);
   const [showForm,setShowForm]=useState(false);
   const blank={item_id:"",date:today(),qty:"",destination_id:"",notes:""};
@@ -560,7 +567,14 @@ function Issues({ locId, items, issues, setIssues, destinations, isAdmin }) {
             <td className="mono" style={{fontSize:11}}>{i.date}</td>
             <td style={{fontWeight:600}}>{itemName(i.item_id)}</td>
             <td className="num warn">{fmtN(i.qty)}</td>
-            <td style={{fontSize:12}}>{i.dest_name||"—"}</td>
+            <td style={{fontSize:12}}>
+              {i.dest_name
+                ? <button onClick={()=>openDest(i)}
+                    style={{background:"none",border:"none",padding:0,textAlign:"left",cursor:"pointer",
+                      fontFamily:"'Inter',sans-serif",fontSize:12,color:T.cream,
+                      borderBottom:`1px dotted ${T.border}`}}>{i.dest_name}</button>
+                : "—"}
+            </td>
             <td style={{fontSize:12,color:T.muted}}>{i.notes||"—"}</td>
             <td>{isAdmin&&<button className="btn btn-danger btn-sm" onClick={()=>remove(i.id)}>x</button>}</td>
           </tr>
@@ -597,6 +611,7 @@ function Issues({ locId, items, issues, setIssues, destinations, isAdmin }) {
         </div>
       </div>
     )}
+    {destDetail && <DestinationDetail row={destDetail} onClose={()=>setDestDetail(null)}/>}
   </>);
 }
 
@@ -1567,6 +1582,276 @@ function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTe
   </>);
 }
 
+
+// ─── DESTINATION COSTING HELPERS ─────────────────────────────────────────────
+// Weighted average unit cost: opening stock value plus all purchases,
+// divided by total units. Falls back to opening cost when nothing is known.
+function weightedCost(item, purchases) {
+  const p      = purchases.filter(x=>x.item_id===item.id);
+  const pQty   = p.reduce((s,x)=>s+(x.qty||0),0);
+  const pValue = p.reduce((s,x)=>s+(x.total_cost||0),0);
+  const oQty   = item.open_qty||0;
+  const oValue = oQty*(item.open_cost||0);
+  const totQty = oQty+pQty;
+  if(totQty<=0) return item.open_cost||0;
+  return (oValue+pValue)/totQty;
+}
+
+// Roll issues up per destination. Issues keep a dest_name snapshot, so
+// anything issued to a destination that was later renamed or removed is
+// still counted under the name it was recorded with.
+function buildDestinationCosts({ destinations, issues, items, purchases, jobs }) {
+  const costOf = {};
+  items.forEach(i=>costOf[i.id]=weightedCost(i,purchases));
+
+  const rows = {};
+  const keyFor = (id,name) => id || `name:${name||"Unassigned"}`;
+
+  destinations.forEach(d=>{
+    rows[d.id] = { id:d.id, name:d.name, live:true, units:0, value:0,
+                   itemCount:0, lines:[], jobs:[] };
+  });
+
+  issues.forEach(iss=>{
+    const k = keyFor(iss.destination_id, iss.dest_name);
+    if(!rows[k]) rows[k] = { id:iss.destination_id||null, name:iss.dest_name||"Unassigned",
+                             live:false, units:0, value:0, itemCount:0, lines:[], jobs:[] };
+    const item = items.find(x=>x.id===iss.item_id);
+    const unit = item ? costOf[item.id] : 0;
+    rows[k].units += iss.qty||0;
+    rows[k].value += (iss.qty||0)*unit;
+    rows[k].lines.push({ ...iss, item, unitCost:unit, value:(iss.qty||0)*unit });
+  });
+
+  (jobs||[]).forEach(j=>{
+    const k = keyFor(j.destination_id, j.dest_name);
+    if(!rows[k]) rows[k] = { id:j.destination_id||null, name:j.dest_name||"Unassigned",
+                             live:false, units:0, value:0, itemCount:0, lines:[], jobs:[] };
+    rows[k].jobs.push(j);
+  });
+
+  return Object.values(rows).map(r=>{
+    r.itemCount = new Set(r.lines.map(l=>l.item_id)).size;
+    return r;
+  }).sort((a,b)=>b.value-a.value);
+}
+
+// ─── DESTINATION DETAIL ──────────────────────────────────────────────────────
+function DestinationDetail({ row, onClose }) {
+  const [tab,setTab] = useState("items");
+
+  // Group issue lines by item so you see totals per item, not every transaction
+  const byItem = useMemo(()=>{
+    const m={};
+    row.lines.forEach(l=>{
+      const k=l.item_id;
+      if(!m[k]) m[k]={ item:l.item, itemId:k, qty:0, value:0, unitCost:l.unitCost, count:0, last:null };
+      m[k].qty   += l.qty||0;
+      m[k].value += l.value||0;
+      m[k].count += 1;
+      const d=parseDMY(l.date);
+      const cur=m[k].last?parseDMY(m[k].last):null;
+      if(d && (!cur || d>cur)) m[k].last=l.date;
+    });
+    return Object.values(m).sort((a,b)=>b.value-a.value);
+  },[row]);
+
+  const history = useMemo(()=>{
+    return [...row.lines].sort((a,b)=>{
+      const da=parseDMY(a.date), db=parseDMY(b.date);
+      return (db?db.getTime():0)-(da?da.getTime():0);
+    });
+  },[row]);
+
+  const jobsSorted = useMemo(()=>{
+    return [...row.jobs].sort((a,b)=>{
+      const da=parseDMY(a.due_date), db=parseDMY(b.due_date);
+      return (db?db.getTime():0)-(da?da.getTime():0);
+    });
+  },[row]);
+
+  const openJobs = row.jobs.filter(j=>j.status==="scheduled"||j.status==="in_progress").length;
+  const doneJobs = row.jobs.filter(j=>j.status==="completed").length;
+
+  const TABS = [
+    {id:"items",   label:`Items (${byItem.length})`},
+    {id:"history", label:`History (${history.length})`},
+    {id:"jobs",    label:`Jobs (${row.jobs.length})`},
+  ];
+
+  return (
+    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal" style={{maxWidth:720}}>
+        <div className="modal-title">{row.name}</div>
+        {!row.live && (
+          <div style={{fontSize:11,color:T.warn,marginBottom:12}}>
+            This destination is no longer on the active list. History is kept.
+          </div>
+        )}
+
+        <div className="strip" style={{marginBottom:16}}>
+          <div className="strip-item"><div className="strip-label">Total Value</div>
+            <div className="strip-val">{fmtR(row.value)}</div></div>
+          <div className="strip-item"><div className="strip-label">Units Issued</div>
+            <div className="strip-val">{fmtN(row.units)}</div></div>
+          <div className="strip-item"><div className="strip-label">Different Items</div>
+            <div className="strip-val">{row.itemCount}</div></div>
+          <div className="strip-item"><div className="strip-label">Open Jobs</div>
+            <div className="strip-val" style={{color:openJobs>0?T.warn:T.ok}}>{openJobs}</div></div>
+        </div>
+
+        <div className="tabs">
+          {TABS.map(t=>(
+            <button key={t.id} className={`tab${tab===t.id?" active":""}`} onClick={()=>setTab(t.id)}>{t.label}</button>
+          ))}
+        </div>
+
+        {/* ITEMS — one line per item, totalled */}
+        {tab==="items" && (
+          <div className="tbl-wrap"><table className="tbl" style={{minWidth:0}}>
+            <thead><tr><th>Item</th><th className="num">Total Qty</th><th className="num">Unit Cost</th>
+              <th className="num">Value</th><th className="num">Times Issued</th><th>Last Issued</th></tr></thead>
+            <tbody>
+              {byItem.map(r=>(
+                <tr key={r.itemId}>
+                  <td style={{fontWeight:600}}>
+                    {r.item?.description || <span style={{color:T.muted}}>Deleted item</span>}
+                    {r.item?.item_code && <div style={{fontSize:10,color:T.muted,fontFamily:"'Space Mono'"}}>{r.item.item_code}</div>}
+                  </td>
+                  <td className="num">{fmtN(r.qty)} <span style={{fontSize:10,color:T.muted}}>{r.item?.unit||""}</span></td>
+                  <td className="num" style={{color:T.muted}}>{fmtR(r.unitCost)}</td>
+                  <td className="num" style={{fontWeight:700,color:T.gold}}>{fmtR(r.value)}</td>
+                  <td className="num" style={{color:T.muted}}>{r.count}</td>
+                  <td className="mono" style={{fontSize:11,color:T.muted}}>{r.last||"—"}</td>
+                </tr>
+              ))}
+              {byItem.length===0&&<tr><td colSpan={6} className="empty">Nothing issued here yet</td></tr>}
+            </tbody>
+          </table></div>
+        )}
+
+        {/* HISTORY — every individual issue */}
+        {tab==="history" && (
+          <div className="tbl-wrap"><table className="tbl" style={{minWidth:0}}>
+            <thead><tr><th>Date</th><th>Item</th><th className="num">Qty</th>
+              <th className="num">Value</th><th>Notes</th></tr></thead>
+            <tbody>
+              {history.map(l=>(
+                <tr key={l.id}>
+                  <td className="mono" style={{fontSize:11}}>{l.date}</td>
+                  <td style={{fontWeight:600}}>{l.item?.description || <span style={{color:T.muted}}>Deleted item</span>}</td>
+                  <td className="num">{fmtN(l.qty)} <span style={{fontSize:10,color:T.muted}}>{l.item?.unit||""}</span></td>
+                  <td className="num" style={{color:T.gold}}>{fmtR(l.value)}</td>
+                  <td style={{fontSize:11,color:T.muted,maxWidth:200}}>{l.notes||"—"}</td>
+                </tr>
+              ))}
+              {history.length===0&&<tr><td colSpan={5} className="empty">No issue history</td></tr>}
+            </tbody>
+          </table></div>
+        )}
+
+        {/* JOBS — maintenance work scheduled or done here */}
+        {tab==="jobs" && (
+          <div className="tbl-wrap"><table className="tbl" style={{minWidth:0}}>
+            <thead><tr><th>Due</th><th>Job</th><th>Type</th><th>Assigned</th><th>Status</th><th>Completed</th></tr></thead>
+            <tbody>
+              {jobsSorted.map(j=>{
+                const done = j.status==="completed";
+                const overdue = !done && j.status!=="cancelled" && parseDMY(j.due_date) && parseDMY(j.due_date) < startOfToday();
+                const col = done?T.ok:overdue?T.danger:j.status==="cancelled"?T.muted:T.gold;
+                return (
+                  <tr key={j.id}>
+                    <td className="mono" style={{fontSize:11}}>{j.due_date}</td>
+                    <td style={{fontWeight:600}}>{j.name}</td>
+                    <td style={{fontSize:11,color:T.muted}}>{JOB_TYPES.find(t=>t.id===j.job_type)?.label||j.job_type}</td>
+                    <td style={{fontSize:12,color:T.muted}}>{j.assigned_to||"—"}</td>
+                    <td><span className="badge" style={{background:`${col}22`,color:col,border:`1px solid ${col}55`}}>
+                      {done?"Done":overdue?"Overdue":j.status==="cancelled"?"Cancelled":"Scheduled"}
+                    </span></td>
+                    <td className="mono" style={{fontSize:11,color:T.muted}}>{j.completed_date||"—"}</td>
+                  </tr>
+                );
+              })}
+              {jobsSorted.length===0&&<tr><td colSpan={6} className="empty">No jobs recorded here</td></tr>}
+            </tbody>
+          </table></div>
+        )}
+
+        {doneJobs>0 && tab==="jobs" && (
+          <div style={{fontSize:11,color:T.muted,marginTop:10}}>
+            {doneJobs} job{doneJobs===1?"":"s"} completed at this destination.
+          </div>
+        )}
+
+        <div style={{display:"flex",gap:9,marginTop:16}}>
+          <button className="btn btn-ghost" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── DESTINATION COSTS PAGE ──────────────────────────────────────────────────
+function DestinationCosts({ destinations, issues, items, purchases, jobs }) {
+  const [open,setOpen] = useState(null);
+
+  const rows = useMemo(()=>buildDestinationCosts({destinations,issues,items,purchases,jobs}),
+    [destinations,issues,items,purchases,jobs]);
+
+  const grand   = rows.reduce((s,r)=>s+r.value,0);
+  const withAny = rows.filter(r=>r.value>0||r.jobs.length>0);
+
+  return (<>
+    <div className="strip">
+      <div className="strip-item"><div className="strip-label">Total Issued Value</div>
+        <div className="strip-val">{fmtR(grand)}</div></div>
+      <div className="strip-item"><div className="strip-label">Destinations</div>
+        <div className="strip-val">{rows.length}</div></div>
+      <div className="strip-item"><div className="strip-label">With Activity</div>
+        <div className="strip-val">{withAny.length}</div></div>
+    </div>
+
+    <div style={{fontSize:12,color:T.muted,marginBottom:14,lineHeight:1.6}}>
+      What each building or room has cost in materials, valued at weighted average cost
+      (opening stock plus purchases). Tap a destination to see the full breakdown.
+    </div>
+
+    <div className="tbl-wrap"><table className="tbl">
+      <thead><tr><th>Destination</th><th className="num">Items</th><th className="num">Units</th>
+        <th className="num">Value</th><th className="num">Jobs</th><th>Share</th></tr></thead>
+      <tbody>
+        {rows.map(r=>(
+          <tr key={r.id||r.name}>
+            <td>
+              <button onClick={()=>setOpen(r)}
+                style={{background:"none",border:"none",padding:0,textAlign:"left",cursor:"pointer",
+                  fontFamily:"'Inter',sans-serif",fontSize:13,fontWeight:600,color:T.cream,
+                  borderBottom:`1px dotted ${T.border}`}}>
+                {r.name}
+              </button>
+              {!r.live && <span className="badge badge-neu" style={{marginLeft:7}}>archived</span>}
+            </td>
+            <td className="num" style={{color:T.muted}}>{r.itemCount||"—"}</td>
+            <td className="num" style={{color:T.muted}}>{r.units?fmtN(r.units):"—"}</td>
+            <td className="num" style={{fontWeight:700,color:r.value>0?T.gold:T.border}}>
+              {r.value>0?fmtR(r.value):"—"}
+            </td>
+            <td className="num" style={{color:T.muted}}>{r.jobs.length||"—"}</td>
+            <td style={{width:110}}>
+              <div style={{height:6,background:"rgba(0,0,0,.3)",borderRadius:3,overflow:"hidden"}}>
+                <div style={{height:"100%",width:`${grand>0?(r.value/grand*100):0}%`,background:T.gold,borderRadius:3}}/>
+              </div>
+            </td>
+          </tr>
+        ))}
+        {rows.length===0&&<tr><td colSpan={6} className="empty">No destinations set up for this location yet</td></tr>}
+      </tbody>
+    </table></div>
+
+    {open && <DestinationDetail row={open} onClose={()=>setOpen(null)}/>}
+  </>);
+}
+
 // ─── PAGES ───────────────────────────────────────────────────────────────────
 const PAGES=[
   {id:"dashboard",   label:"Dashboard",    section:"Overview",   adminOnly:false},
@@ -1576,6 +1861,7 @@ const PAGES=[
   {id:"issues",      label:"Issues",       section:"Stock",      adminOnly:false},
   {id:"count",       label:"Stock Count",  section:"Stock",      adminOnly:false},
   {id:"orders",      label:"Orders",       section:"Stock",      adminOnly:false},
+  {id:"destcosts",   label:"Destination Costs", section:"Stock", adminOnly:false},
   {id:"items",       label:"Stock Items",  section:"Management", adminOnly:true},
   {id:"destinations",label:"Destinations", section:"Management", adminOnly:true},
 ];
@@ -1782,10 +2068,13 @@ export default function App() {
         <div className="section">
           {page==="dashboard"    && <Dashboard items={items} purchases={purchases} issues={issues} counts={counts}/>}
           {page==="purchases"    && <Purchases locId={locId} items={items} purchases={purchases} setPurchases={setPurchases} isAdmin={isAdmin}/>}
-          {page==="issues"       && <Issues locId={locId} items={items} issues={issues} setIssues={setIssues} destinations={destinations} isAdmin={isAdmin}/>}
+          {page==="issues"       && <Issues locId={locId} items={items} issues={issues} setIssues={setIssues}
+                                       destinations={destinations} purchases={purchases} jobs={jobs} isAdmin={isAdmin}/>}
           {page==="count"        && <StockCount locId={locId} items={items} purchases={purchases} issues={issues} counts={counts} setCounts={setCounts}/>}
           {page==="orders"       && <Orders items={items} purchases={purchases} issues={issues} counts={counts}
                                        jobs={jobs} jobMaterials={jobMaterials} templates={templates} templateMaterials={templateMaterials}/>}
+          {page==="destcosts"    && <DestinationCosts destinations={destinations} issues={issues}
+                                       items={items} purchases={purchases} jobs={jobs}/>}
           {page==="calendar"     && <Calendar locId={locId} jobs={jobs} jobMaterials={jobMaterials} items={items}
                                        purchases={purchases} issues={issues} destinations={destinations}
                                        templates={templates} setJobs={setJobs} setJobMaterials={setJobMaterials}
