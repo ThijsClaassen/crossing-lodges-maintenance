@@ -1205,12 +1205,18 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates,
   const [used, setUsed]   = useState(()=>{
     const m={}; mats.forEach(x=>m[x.id]=String(x.qty_planned||0)); return m;
   });
+  const [extras, setExtras] = useState([]); // [{item_id, qty}] — unplanned materials
   const [busy, setBusy]   = useState(false);
+
+  const plannedIds = new Set(mats.map(m=>m.item_id));
+  const addExtra    = ()=>setExtras(r=>[...r,{item_id:"",qty:""}]);
+  const updExtra     = (i,k,v)=>setExtras(r=>r.map((x,j)=>j===i?{...x,[k]:v}:x));
+  const removeExtra  = i=>setExtras(r=>r.filter((_,j)=>j!==i));
 
   const save = async () => {
     setBusy(true);
     try{
-      // 1. Write a stock issue for each material actually used
+      // 1. Write a stock issue for each planned material actually used
       const newIssues = [];
       for(const m of mats){
         const qty = parseFloat(used[m.id])||0;
@@ -1225,15 +1231,37 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates,
         newIssues.push(row);
         await sb.update("maint_job_materials", m.id, {qty_used:qty});
       }
-      if(newIssues.length) setIssues(p=>[...p, ...newIssues]);
       setJobMaterials(p=>p.map(m=>mats.find(x=>x.id===m.id)
         ? {...m, qty_used: parseFloat(used[m.id])||0} : m));
 
-      // 2. Mark this job complete
+      // 2. Write extra materials that weren't on the original job card —
+      //    both as a stock issue and as a new maint_job_materials row so the
+      //    job's history shows everything that was actually used.
+      const newJobMats = [];
+      for(const ex of extras){
+        const qty = parseFloat(ex.qty)||0;
+        if(!ex.item_id || qty<=0) continue;
+        const row = {
+          id: uid(), location_id: locId, item_id: ex.item_id, date,
+          qty, destination_id: job.destination_id||null,
+          dest_name: job.dest_name||null,
+          notes: `Job: ${job.name} (added at completion)`,
+        };
+        await sb.insert("maint_issues", row);
+        newIssues.push(row);
+
+        const jm = {id:uid(), job_id:job.id, item_id:ex.item_id, qty_planned:0, qty_used:qty};
+        await sb.insert("maint_job_materials", jm);
+        newJobMats.push(jm);
+      }
+      if(newIssues.length) setIssues(p=>[...p, ...newIssues]);
+      if(newJobMats.length) setJobMaterials(p=>[...p, ...newJobMats]);
+
+      // 3. Mark this job complete
       await sb.update("maint_jobs", job.id, {status:"completed", completed_date:date, completion_notes:notes||null});
       setJobs(p=>p.map(j=>j.id===job.id?{...j,status:"completed",completed_date:date,completion_notes:notes||null}:j));
 
-      // 3. If recurring, schedule the next one from the ACTUAL completion date
+      // 4. If recurring, schedule the next one from the ACTUAL completion date
       const tpl = templates.find(t=>t.id===job.template_id);
       if(tpl && tpl.recurrence_type!=="none" && tpl.recurrence_n>0 && tpl.active!==false){
         const nextDue = fmtDMY(addPeriod(parseDMY(date), tpl.recurrence_type, tpl.recurrence_n));
@@ -1247,14 +1275,17 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates,
         setJobs(p=>[...p, nextJob]);
 
         // Copy the template's material list onto the new job
+        // (note: this deliberately does NOT carry forward one-off extras —
+        // only the template's own planned list, so ad-hoc additions don't
+        // silently become permanent parts of the recurring job)
         const tplMats = await sb.select("maint_template_materials", `template_id=eq.${tpl.id}`);
-        const newMats = [];
+        const nextMats = [];
         for(const tm of tplMats){
           const row = {id:uid(), job_id:nextJob.id, item_id:tm.item_id, qty_planned:+tm.qty};
           await sb.insert("maint_job_materials", row);
-          newMats.push(row);
+          nextMats.push(row);
         }
-        if(newMats.length) setJobMaterials(p=>[...p, ...newMats]);
+        if(nextMats.length) setJobMaterials(p=>[...p, ...nextMats]);
 
         await sb.update("maint_job_templates", tpl.id, {next_due: nextDue});
         setTemplates(p=>p.map(t=>t.id===tpl.id?{...t,next_due:nextDue}:t));
@@ -1303,6 +1334,38 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates,
             </tbody>
           </table></div>
         </>)}
+
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+          <div className="section-title" style={{margin:0}}>Additional Materials Used</div>
+          <button className="btn btn-ghost btn-sm" onClick={addExtra}>+ Add Item</button>
+        </div>
+        <div style={{fontSize:11,color:T.muted,marginBottom:10,lineHeight:1.5}}>
+          Anything used that wasn't on the original job card &mdash; this also issues the stock.
+        </div>
+        {extras.length===0 && (
+          <div style={{fontSize:11,color:T.muted,marginBottom:14}}>Nothing added.</div>
+        )}
+        {extras.length>0 && (
+          <div style={{marginBottom:14}}>
+            {extras.map((ex,i)=>(
+              <div key={i} style={{display:"flex",gap:7,marginBottom:7,alignItems:"center"}}>
+                <select value={ex.item_id} onChange={e=>updExtra(i,"item_id",e.target.value)}
+                  style={{flex:1,background:"rgba(0,0,0,.25)",border:`1px solid ${T.border}`,borderRadius:6,
+                    padding:"9px 10px",color:T.cream,fontFamily:"'Inter',sans-serif",fontSize:14,outline:"none"}}>
+                  <option value="">-- Select item --</option>
+                  {items.map(it=>(
+                    <option key={it.id} value={it.id}>
+                      {it.description} ({it.unit}){plannedIds.has(it.id)?" — already on card":""}
+                    </option>
+                  ))}
+                </select>
+                <input className="count-input" type="number" placeholder="Qty" value={ex.qty}
+                  onChange={e=>updExtra(i,"qty",e.target.value)}/>
+                <button className="btn btn-danger btn-sm" onClick={()=>removeExtra(i)}>x</button>
+              </div>
+            ))}
+          </div>
+        )}
 
         <div className="field"><label>Completion Notes</label>
           <textarea rows={3} value={notes} onChange={e=>setNotes(e.target.value)}
