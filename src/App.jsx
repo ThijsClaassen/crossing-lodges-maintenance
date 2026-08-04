@@ -1136,7 +1136,10 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
             return (
               <tr key={j.id}>
                 <td className="mono" style={{fontSize:11}}>{j.due_date}</td>
-                <td style={{fontWeight:600}}>{j.name}</td>
+                <td style={{fontWeight:600}}>
+                  {j.name}
+                  {j.vehicle_id && <span className="badge badge-neu" style={{marginLeft:7}}>Vehicle</span>}
+                </td>
                 <td style={{fontSize:11,color:T.muted}}>{JOB_TYPES.find(t=>t.id===j.job_type)?.label||j.job_type}</td>
                 <td style={{fontSize:12,color:T.muted}}>{j.dest_name||"—"}</td>
                 <td style={{fontSize:12,color:T.muted}}>{j.assigned_to||"—"}</td>
@@ -1212,7 +1215,10 @@ function JobDetail({ job, onClose, locId, jobs, jobMaterials, items, purchases, 
   return (
     <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div className="modal">
-        <div className="modal-title">{job.name}</div>
+        <div className="modal-title">
+          {job.name}
+          {job.vehicle_id && <span className="badge badge-neu" style={{marginLeft:9,verticalAlign:"middle"}}>Vehicle Service</span>}
+        </div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 16px",marginBottom:14}}>
           {[["Due date",job.due_date],
             ["Type",JOB_TYPES.find(t=>t.id===job.job_type)?.label||job.job_type],
@@ -1292,6 +1298,7 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates,
     const m={}; mats.forEach(x=>m[x.id]=String(x.qty_planned||0)); return m;
   });
   const [extras, setExtras] = useState([]); // [{item_id, qty}] — unplanned materials
+  const [odometer, setOdometer] = useState("");
   const [busy, setBusy]   = useState(false);
 
   const plannedIds = new Set(mats.map(m=>m.item_id));
@@ -1347,6 +1354,18 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates,
       await sb.update("maint_jobs", job.id, {status:"completed", completed_date:date, completion_notes:notes||null});
       setJobs(p=>p.map(j=>j.id===job.id?{...j,status:"completed",completed_date:date,completion_notes:notes||null}:j));
 
+      // 3b. This job was auto-created for a self-serviced vehicle (Operations
+      // app) — completing it here needs to feed the service date (and
+      // optionally the odometer) back into that vehicle's record, or the
+      // Operations app will see it as still due and create another job card.
+      if (job.vehicle_id) {
+        const patch = { last_service_date: date };
+        const km = parseFloat(odometer);
+        if (!isNaN(km) && km > 0) patch.last_service_km = km;
+        try { await sb.update("fleet", job.vehicle_id, patch); }
+        catch(e) { console.error("Could not update vehicle service date:", e); }
+      }
+
       // 4. If recurring, schedule the next one from the ACTUAL completion date
       const tpl = templates.find(t=>t.id===job.template_id);
       if(tpl && tpl.recurrence_type!=="none" && tpl.recurrence_n>0 && tpl.active!==false){
@@ -1390,6 +1409,20 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates,
     <div className="overlay" onClick={e=>e.target===e.currentTarget&&onBack()}>
       <div className="modal">
         <div className="modal-title">Complete <span>{job.name}</span></div>
+
+        {job.vehicle_id && (
+          <div style={{background:"rgba(184,147,90,.06)",border:`1px solid rgba(184,147,90,.2)`,borderRadius:7,padding:"11px 13px",marginBottom:14}}>
+            <div style={{fontSize:10,letterSpacing:".1em",textTransform:"uppercase",color:T.gold,fontWeight:700,marginBottom:6}}>Vehicle Service</div>
+            <div style={{fontSize:11,color:T.muted,lineHeight:1.5,marginBottom:10}}>
+              This updates the vehicle's Last Service Date in Operations automatically.
+              Add the current odometer too if you know it, so the km-based service alert stays accurate.
+            </div>
+            <div className="field" style={{marginBottom:0}}>
+              <label>Current Odometer (optional)</label>
+              <input type="number" min="0" placeholder="e.g. 84500" value={odometer} onChange={e=>setOdometer(e.target.value)}/>
+            </div>
+          </div>
+        )}
 
         <div className="field"><label>Completion Date</label>
           <DateField value={date} onChange={setDate}/>
