@@ -125,6 +125,8 @@ const css = `
   .cal-cell{background:${T.panel};border:1px solid ${T.border};border-radius:6px;min-height:88px;padding:5px 4px;display:flex;flex-direction:column;gap:3px}
   .cal-empty{background:transparent;border-color:transparent}
   .cal-today{border-color:${T.gold};box-shadow:0 0 0 1px rgba(184,147,90,.3)}
+  .cal-drop-target{border-color:${T.ok};background:rgba(90,155,114,.1);box-shadow:0 0 0 1px rgba(90,155,114,.4)}
+  .cal-job[draggable="true"]:active{opacity:.6}
   .cal-date{font-family:'Space Mono',monospace;font-size:11px;color:${T.muted};padding-left:3px}
   .cal-today .cal-date{color:${T.gold};font-weight:700}
   .cal-job{background:rgba(0,0,0,.28);border:none;border-radius:3px;padding:3px 5px;font-family:'Inter',sans-serif;font-size:10px;font-weight:500;text-align:left;cursor:pointer;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;width:100%}
@@ -281,14 +283,22 @@ function Dashboard({ items, purchases, issues, counts }) {
 function StockItems({ locId, items, setItems }) {
   const [showForm,setShowForm]=useState(false);
   const [editId,setEditId]=useState(null);
-  const blank={item_code:"",description:"",storeroom:"",shelf:"",position:"",unit:"ea",open_qty:"",open_cost:"",min_units:"",max_units:""};
+  const [newCategory,setNewCategory]=useState(false);
+  const blank={item_code:"",description:"",category:"",storeroom:"",shelf:"",position:"",unit:"ea",open_qty:"",open_cost:"",min_units:"",max_units:""};
   const [form,setForm]=useState(blank);
   const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
-  const openAdd=()=>{setForm(blank);setEditId(null);setShowForm(true);};
-  const openEdit=i=>{setForm({...i,open_qty:String(i.open_qty),open_cost:String(i.open_cost),min_units:String(i.min_units),max_units:String(i.max_units)});setEditId(i.id);setShowForm(true);};
+
+  const categories = useMemo(()=>[...new Set(items.map(i=>i.category).filter(Boolean))].sort(),[items]);
+
+  const openAdd=()=>{setForm(blank);setEditId(null);setNewCategory(categories.length===0);setShowForm(true);};
+  const openEdit=i=>{
+    setForm({...i,open_qty:String(i.open_qty),open_cost:String(i.open_cost),min_units:String(i.min_units),max_units:String(i.max_units)});
+    setEditId(i.id);setNewCategory(!i.category || !categories.includes(i.category));setShowForm(true);
+  };
   const save=async()=>{
     if(!form.description?.trim())return;
     const row={location_id:locId,item_code:form.item_code||null,description:form.description.trim(),
+      category:form.category?.trim()||null,
       storeroom:form.storeroom||null,shelf:form.shelf||null,position:form.position||null,
       unit:form.unit||"ea",open_qty:parseFloat(form.open_qty)||0,open_cost:parseFloat(form.open_cost)||0,
       min_units:parseFloat(form.min_units)||0,max_units:parseFloat(form.max_units)||0,sort_order:items.length+1};
@@ -304,37 +314,50 @@ function StockItems({ locId, items, setItems }) {
     catch(e){alert("Error: "+e.message);}
   };
   const totalVal=items.reduce((s,i)=>s+(i.open_qty||0)*(i.open_cost||0),0);
+
+  const grouped = useMemo(()=>{
+    const g={};
+    items.forEach(i=>{ const c=i.category||"Uncategorised"; (g[c]||(g[c]=[])).push(i); });
+    return Object.entries(g).sort((a,b)=>a[0].localeCompare(b[0]));
+  },[items]);
+
   return (<>
     <div className="strip">
       <div className="strip-item"><div className="strip-label">Items</div><div className="strip-val">{items.length}</div></div>
+      <div className="strip-item"><div className="strip-label">Categories</div><div className="strip-val">{categories.length}</div></div>
       <div className="strip-item"><div className="strip-label">Opening Value</div><div className="strip-val">{fmtR(totalVal)}</div></div>
       <div style={{marginLeft:"auto"}}><button className="btn btn-primary" onClick={openAdd}>+ Add Item</button></div>
     </div>
-    <div className="tbl-wrap"><table className="tbl">
-      <thead><tr><th>Code</th><th>Description</th><th>Storeroom</th><th>Shelf</th><th>Position</th><th>Unit</th>
-        <th className="num">Open Qty</th><th className="num">Open Cost</th><th className="num">Min</th><th className="num">Max</th><th></th></tr></thead>
-      <tbody>
-        {items.map(i=>(
-          <tr key={i.id}>
-            <td className="mono" style={{fontSize:11,color:T.muted}}>{i.item_code||"—"}</td>
-            <td style={{fontWeight:600}}>{i.description}</td>
-            <td style={{color:T.muted,fontSize:12}}>{i.storeroom||"—"}</td>
-            <td style={{color:T.muted,fontSize:12}}>{i.shelf||"—"}</td>
-            <td style={{color:T.muted,fontSize:12}}>{i.position||"—"}</td>
-            <td><span className="badge badge-neu">{i.unit}</span></td>
-            <td className="num">{fmtN(i.open_qty)}</td>
-            <td className="num">{fmtR(i.open_cost)}</td>
-            <td className="num" style={{color:T.muted}}>{i.min_units||"—"}</td>
-            <td className="num" style={{color:T.muted}}>{i.max_units||"—"}</td>
-            <td style={{display:"flex",gap:5}}>
-              <button className="btn btn-ghost btn-sm" onClick={()=>openEdit(i)}>Edit</button>
-              <button className="btn btn-danger btn-sm" onClick={()=>remove(i)}>x</button>
-            </td>
-          </tr>
-        ))}
-        {items.length===0&&<tr><td colSpan={11} className="empty">No items for this location yet. Add one above.</td></tr>}
-      </tbody>
-    </table></div>
+    {grouped.map(([cat,catItems])=>(
+      <div key={cat} style={{marginBottom:22}}>
+        <div className="section-title">{cat} <span style={{color:T.muted,fontWeight:400}}>({catItems.length})</span></div>
+        <div className="tbl-wrap"><table className="tbl">
+          <thead><tr><th>Code</th><th>Description</th><th>Storeroom</th><th>Shelf</th><th>Position</th><th>Unit</th>
+            <th className="num">Open Qty</th><th className="num">Open Cost</th><th className="num">Min</th><th className="num">Max</th><th></th></tr></thead>
+          <tbody>
+            {catItems.map(i=>(
+              <tr key={i.id}>
+                <td className="mono" style={{fontSize:11,color:T.muted}}>{i.item_code||"—"}</td>
+                <td style={{fontWeight:600}}>{i.description}</td>
+                <td style={{color:T.muted,fontSize:12}}>{i.storeroom||"—"}</td>
+                <td style={{color:T.muted,fontSize:12}}>{i.shelf||"—"}</td>
+                <td style={{color:T.muted,fontSize:12}}>{i.position||"—"}</td>
+                <td><span className="badge badge-neu">{i.unit}</span></td>
+                <td className="num">{fmtN(i.open_qty)}</td>
+                <td className="num">{fmtR(i.open_cost)}</td>
+                <td className="num" style={{color:T.muted}}>{i.min_units||"—"}</td>
+                <td className="num" style={{color:T.muted}}>{i.max_units||"—"}</td>
+                <td style={{display:"flex",gap:5}}>
+                  <button className="btn btn-ghost btn-sm" onClick={()=>openEdit(i)}>Edit</button>
+                  <button className="btn btn-danger btn-sm" onClick={()=>remove(i)}>x</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table></div>
+      </div>
+    ))}
+    {items.length===0 && <div className="empty">No items for this location yet. Add one above.</div>}
     {showForm&&(
       <div className="overlay" onClick={e=>e.target===e.currentTarget&&setShowForm(false)}>
         <div className="modal">
@@ -350,6 +373,30 @@ function StockItems({ locId, items, setItems }) {
             </div>
           </div>
           <div className="field"><label>Description</label><input type="text" value={form.description||""} onChange={f("description")}/></div>
+
+          <div className="field"><label>Category</label>
+            {newCategory || categories.length===0 ? (
+              <div style={{display:"flex",gap:7}}>
+                <input type="text" placeholder="e.g. Plumbing" value={form.category||""} onChange={f("category")} style={{flex:1}}/>
+                {categories.length>0 && (
+                  <button className="btn btn-ghost btn-sm" type="button" onClick={()=>{setNewCategory(false);setForm(p=>({...p,category:""}));}}>
+                    Choose existing
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div style={{display:"flex",gap:7}}>
+                <select value={form.category||""} onChange={f("category")} style={{flex:1}}>
+                  <option value="">-- Select category --</option>
+                  {categories.map(c=><option key={c} value={c}>{c}</option>)}
+                </select>
+                <button className="btn btn-ghost btn-sm" type="button" onClick={()=>{setNewCategory(true);setForm(p=>({...p,category:""}));}}>
+                  + New
+                </button>
+              </div>
+            )}
+          </div>
+
           <div className="grid3">
             <div className="field"><label>Storeroom</label><input type="text" value={form.storeroom||""} onChange={f("storeroom")}/></div>
             <div className="field"><label>Shelf</label><input type="text" value={form.shelf||""} onChange={f("shelf")}/></div>
@@ -959,8 +1006,20 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
   const [view, setView]         = useState("month");   // month | list
   const [openJob, setOpenJob]   = useState(null);
   const [showAdHoc, setShowAdHoc] = useState(false);
+  const [dragOverKey, setDragOverKey] = useState(null);
+  const [dragging, setDragging] = useState(false);
 
   const todayD = startOfToday();
+
+  const rescheduleJob = async (jobId, newDate) => {
+    const job = jobs.find(j=>j.id===jobId);
+    if(!job || job.due_date===newDate) return;
+    if(job.status!=="scheduled" && job.status!=="in_progress") return; // guard, shouldn't happen given draggable is gated already
+    try{
+      await sb.update("maint_jobs", jobId, {due_date:newDate});
+      setJobs(p=>p.map(j=>j.id===jobId?{...j,due_date:newDate}:j));
+    }catch(e){ alert("Could not reschedule: "+e.message); }
+  };
 
   // Build month grid (Mon-first)
   const grid = useMemo(()=>{
@@ -1030,16 +1089,30 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
           if(!dt) return <div key={i} className="cal-cell cal-empty"/>;
           const dayJobs = jobsOn(dt);
           const isToday = sameDay(dt, todayD);
+          const dateKey = fmtDMY(dt);
+          const isDragOver = dragOverKey===dateKey;
           return (
-            <div key={i} className={`cal-cell${isToday?" cal-today":""}`}>
+            <div key={i} className={`cal-cell${isToday?" cal-today":""}${isDragOver?" cal-drop-target":""}`}
+              onDragOver={e=>{ if(isAdmin){ e.preventDefault(); setDragOverKey(dateKey); } }}
+              onDragLeave={()=>{ if(dragOverKey===dateKey) setDragOverKey(null); }}
+              onDrop={e=>{
+                e.preventDefault(); setDragOverKey(null); setDragging(false);
+                const jobId = e.dataTransfer.getData("text/plain");
+                if(jobId) rescheduleJob(jobId, dateKey);
+              }}>
               <div className="cal-date">{dt.getDate()}</div>
               {dayJobs.slice(0,3).map(j=>{
                 const st=statusOf(j);
+                const canDrag = isAdmin && (st==="scheduled"||st==="overdue");
                 return (
                   <button key={j.id} className="cal-job" onClick={()=>setOpenJob(j)}
+                    draggable={canDrag}
+                    onDragStart={e=>{ e.dataTransfer.setData("text/plain", j.id); e.dataTransfer.effectAllowed="move"; setDragging(true); }}
+                    onDragEnd={()=>{ setDragging(false); setDragOverKey(null); }}
                     style={{borderLeft:`3px solid ${statusColor(st)}`,
                             color:st==="completed"?T.muted:T.cream,
-                            textDecoration:st==="completed"?"line-through":"none"}}>
+                            textDecoration:st==="completed"?"line-through":"none",
+                            cursor:canDrag?"grab":"pointer"}}>
                     {j.name}
                   </button>
                 );
@@ -1049,6 +1122,11 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
           );
         })}
       </div>
+      {isAdmin && (
+        <div style={{fontSize:11,color:T.muted,marginTop:8}}>
+          Tip: drag a scheduled job onto another date to reschedule it.
+        </div>
+      )}
     </>) : (
       <div className="tbl-wrap"><table className="tbl">
         <thead><tr><th>Due</th><th>Job</th><th>Type</th><th>Where</th><th>Assigned</th><th>Status</th><th></th></tr></thead>
@@ -1079,7 +1157,7 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
     {openJob && (
       <JobDetail job={openJob} onClose={()=>setOpenJob(null)}
         locId={locId} jobs={jobs} jobMaterials={jobMaterials} items={items}
-        purchases={purchases} issues={issues} templates={templates}
+        purchases={purchases} issues={issues} templates={templates} destinations={destinations}
         setJobs={setJobs} setJobMaterials={setJobMaterials} setIssues={setIssues}
         setTemplates={setTemplates} isAdmin={isAdmin}/>
     )}
@@ -1093,8 +1171,9 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
 
 // ─── JOB DETAIL ──────────────────────────────────────────────────────────────
 function JobDetail({ job, onClose, locId, jobs, jobMaterials, items, purchases, issues,
-                     templates, setJobs, setJobMaterials, setIssues, setTemplates, isAdmin }) {
+                     templates, destinations, setJobs, setJobMaterials, setIssues, setTemplates, isAdmin }) {
   const [completing, setCompleting] = useState(false);
+  const [editing, setEditing] = useState(false);
   const mats = jobMaterials.filter(m=>m.job_id===job.id);
   const isOpen = job.status==="scheduled"||job.status==="in_progress";
 
@@ -1122,6 +1201,12 @@ function JobDetail({ job, onClose, locId, jobs, jobMaterials, items, purchases, 
       locId={locId} templates={templates}
       setJobs={setJobs} setJobMaterials={setJobMaterials} setIssues={setIssues} setTemplates={setTemplates}
       onDone={()=>{setCompleting(false);onClose();}} onBack={()=>setCompleting(false)}/>
+  );
+
+  if(editing) return (
+    <EditJob job={job} mats={mats} items={items} destinations={destinations}
+      setJobs={setJobs} setJobMaterials={setJobMaterials}
+      onDone={()=>{setEditing(false);onClose();}} onBack={()=>setEditing(false)}/>
   );
 
   return (
@@ -1188,6 +1273,7 @@ function JobDetail({ job, onClose, locId, jobs, jobMaterials, items, purchases, 
 
         <div style={{display:"flex",gap:9,flexWrap:"wrap"}}>
           {isOpen && <button className="btn btn-primary" onClick={()=>setCompleting(true)}>Complete Job</button>}
+          {isOpen && isAdmin && <button className="btn btn-ghost" onClick={()=>setEditing(true)}>Edit</button>}
           {isOpen && isAdmin && <button className="btn btn-ghost" onClick={cancel}>Cancel Job</button>}
           {isAdmin && <button className="btn btn-danger" onClick={remove}>Delete</button>}
           <button className="btn btn-ghost" onClick={onClose}>Close</button>
@@ -1467,11 +1553,113 @@ function AdHocJob({ locId, items, destinations, setJobs, setJobMaterials, onClos
   );
 }
 
+// ─── EDIT JOB (Admin) ─────────────────────────────────────────────────────────
+// Edits an existing scheduled job instance -- its own date/details/materials,
+// not the recurring template it may have come from. Only available while the
+// job is still scheduled/in_progress; completed jobs are historical record.
+function EditJob({ job, mats, items, destinations, setJobs, setJobMaterials, onDone, onBack }) {
+  const locDests = destinations.filter(d=>d.location_id===job.location_id).sort((a,b)=>a.sort_order-b.sort_order);
+  const [form,setForm] = useState({
+    name:job.name, description:job.description||"", job_type:job.job_type||"preventive",
+    destination_id:job.destination_id||"", assigned_to:job.assigned_to||"", due_date:job.due_date,
+  });
+  const [rows,setRows] = useState(()=>mats.map(m=>{
+    const it = items.find(x=>x.id===m.item_id);
+    return {id:m.id, item_id:m.item_id, qty:String(m.qty_planned), category:it?.category||"__none__"};
+  }));
+  const [busy,setBusy] = useState(false);
+  const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
+
+  const save = async () => {
+    if(!form.name.trim()) return;
+    setBusy(true);
+    try{
+      const dest = locDests.find(d=>d.id===form.destination_id);
+      const patch = {
+        name:form.name.trim(), description:form.description||null, job_type:form.job_type,
+        destination_id:form.destination_id||null, dest_name:dest?.name||null,
+        assigned_to:form.assigned_to||null, due_date:form.due_date,
+      };
+      await sb.update("maint_jobs", job.id, patch);
+      setJobs(p=>p.map(j=>j.id===job.id?{...j,...patch}:j));
+
+      // Replace the material list wholesale rather than trying to diff it --
+      // simplest and matches how templates handle their own material edits.
+      for(const m of mats) await sb.delete("maint_job_materials", m.id);
+      const newMats=[];
+      for(const r of rows){
+        if(!r.item_id||!(parseFloat(r.qty)>0)) continue;
+        const m={id:uid(), job_id:job.id, item_id:r.item_id, qty_planned:parseFloat(r.qty)};
+        await sb.insert("maint_job_materials", m);
+        newMats.push(m);
+      }
+      setJobMaterials(p=>[...p.filter(m=>m.job_id!==job.id), ...newMats]);
+      onDone();
+    }catch(e){ alert("Save failed: "+e.message); }
+    finally{ setBusy(false); }
+  };
+
+  return (
+    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onBack()}>
+      <div className="modal">
+        <div className="modal-title">Edit <span>{job.name}</span></div>
+        {job.template_id && (
+          <div style={{fontSize:11,color:T.muted,marginBottom:14,lineHeight:1.5}}>
+            This job came from a recurring template. Changes here affect only this occurrence --
+            the template itself is unchanged, and future occurrences will still follow it.
+          </div>
+        )}
+        <div className="field"><label>Job Name</label>
+          <input type="text" value={form.name} onChange={f("name")}/>
+        </div>
+        <div className="grid2">
+          <div className="field"><label>Due Date</label>
+            <DateField value={form.due_date} onChange={v=>setForm(p=>({...p,due_date:v}))}/>
+          </div>
+          <div className="field"><label>Job Type</label>
+            <select value={form.job_type} onChange={f("job_type")}>
+              {JOB_TYPES.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}
+            </select>
+          </div>
+          <div className="field"><label>Where</label>
+            <select value={form.destination_id} onChange={f("destination_id")}>
+              <option value="">-- Select --</option>
+              {locDests.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </div>
+          <div className="field"><label>Assigned To</label>
+            <input type="text" value={form.assigned_to} onChange={f("assigned_to")} placeholder="Name"/>
+          </div>
+        </div>
+        <div className="field"><label>Description</label>
+          <textarea rows={2} value={form.description} onChange={f("description")}/>
+        </div>
+
+        <MaterialPicker items={items} rows={rows} setRows={setRows}/>
+
+        <div style={{display:"flex",gap:9,marginTop:4}}>
+          <button className="btn btn-primary" onClick={save} disabled={busy}>{busy?"Saving...":"Save Changes"}</button>
+          <button className="btn btn-ghost" onClick={onBack} disabled={busy}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── MATERIAL PICKER (shared) ────────────────────────────────────────────────
 function MaterialPicker({ items, rows, setRows }) {
-  const add    = ()=>setRows(r=>[...r,{item_id:"",qty:""}]);
+  const categories = useMemo(()=>[...new Set(items.map(it=>it.category).filter(Boolean))].sort(),[items]);
+  const uncategorisedCount = items.filter(it=>!it.category).length;
+
+  const add    = ()=>setRows(r=>[...r,{category:"", item_id:"", qty:""}]);
   const upd    = (i,k,v)=>setRows(r=>r.map((x,j)=>j===i?{...x,[k]:v}:x));
   const remove = i=>setRows(r=>r.filter((_,j)=>j!==i));
+
+  const setCategory = (i,cat)=>setRows(r=>r.map((x,j)=>j===i?{...x,category:cat,item_id:""}:x)); // reset item when category changes
+
+  const selectStyle = {flex:1,background:"rgba(0,0,0,.25)",border:`1px solid ${T.border}`,borderRadius:6,
+    padding:"9px 10px",color:T.cream,fontFamily:"'Inter',sans-serif",fontSize:14,outline:"none"};
+
   return (
     <div style={{marginBottom:12}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
@@ -1479,19 +1667,27 @@ function MaterialPicker({ items, rows, setRows }) {
         <button className="btn btn-ghost btn-sm" onClick={add}>+ Add Material</button>
       </div>
       {rows.length===0 && <div style={{fontSize:11,color:T.muted}}>No materials added.</div>}
-      {rows.map((r,i)=>(
-        <div key={i} style={{display:"flex",gap:7,marginBottom:7,alignItems:"center"}}>
-          <select value={r.item_id} onChange={e=>upd(i,"item_id",e.target.value)}
-            style={{flex:1,background:"rgba(0,0,0,.25)",border:`1px solid ${T.border}`,borderRadius:6,
-              padding:"9px 10px",color:T.cream,fontFamily:"'Inter',sans-serif",fontSize:14,outline:"none"}}>
-            <option value="">-- Select item --</option>
-            {items.map(it=><option key={it.id} value={it.id}>{it.description} ({it.unit})</option>)}
-          </select>
-          <input className="count-input" type="number" placeholder="Qty" value={r.qty}
-            onChange={e=>upd(i,"qty",e.target.value)}/>
-          <button className="btn btn-danger btn-sm" onClick={()=>remove(i)}>x</button>
-        </div>
-      ))}
+      {rows.map((r,i)=>{
+        const itemsInCat = r.category
+          ? items.filter(it => r.category==="__none__" ? !it.category : it.category===r.category)
+          : [];
+        return (
+          <div key={i} style={{display:"flex",gap:7,marginBottom:7,alignItems:"center",flexWrap:"wrap"}}>
+            <select value={r.category||""} onChange={e=>setCategory(i,e.target.value)} style={{...selectStyle,flex:"0 0 160px"}}>
+              <option value="">-- Category --</option>
+              {categories.map(c=><option key={c} value={c}>{c}</option>)}
+              {uncategorisedCount>0 && <option value="__none__">Uncategorised</option>}
+            </select>
+            <select value={r.item_id} onChange={e=>upd(i,"item_id",e.target.value)} disabled={!r.category} style={{...selectStyle,opacity:r.category?1:.5}}>
+              <option value="">{r.category ? "-- Select item --" : "Pick a category first"}</option>
+              {itemsInCat.map(it=><option key={it.id} value={it.id}>{it.description} ({it.unit})</option>)}
+            </select>
+            <input className="count-input" type="number" placeholder="Qty" value={r.qty}
+              onChange={e=>upd(i,"qty",e.target.value)}/>
+            <button className="btn btn-danger btn-sm" onClick={()=>remove(i)}>x</button>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1515,7 +1711,10 @@ function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTe
              destination_id:t.destination_id||"",assigned_to:t.assigned_to||"",
              recurrence_type:t.recurrence_type||"none",recurrence_n:String(t.recurrence_n||0),
              next_due:t.next_due||today()});
-    setRows(templateMaterials.filter(m=>m.template_id===t.id).map(m=>({id:m.id,item_id:m.item_id,qty:String(m.qty)})));
+    setRows(templateMaterials.filter(m=>m.template_id===t.id).map(m=>{
+      const it = items.find(x=>x.id===m.item_id);
+      return {id:m.id,item_id:m.item_id,qty:String(m.qty),category:it?.category||"__none__"};
+    }));
     setEditId(t.id); setShowForm(true);
   };
 
