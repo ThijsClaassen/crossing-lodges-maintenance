@@ -1,0 +1,12 @@
+const SB_URL = "https://arrendpmuwdhrfwvokhv.supabase.co";
+const SB_KEY = "sb_publishable_e5hLLlXWBVV8NkNUAz3Blg_8oMwP3Wt";
+const sb = {
+  h: { "apikey":SB_KEY,"Authorization":`Bearer ${SB_KEY}`,"Content-Type":"application/json","Prefer":"return=representation" },
+  async select(t,f=""){ const r=await fetch(`${SB_URL}/rest/v1/${t}?${f}&order=created_at.asc`,{headers:sb.h}); if(!r.ok)throw new Error(await r.text()); return r.json(); },
+  async insert(t,row){ const r=await fetch(`${SB_URL}/rest/v1/${t}`,{method:"POST",headers:sb.h,body:JSON.stringify(row)}); if(!r.ok)throw new Error(await r.text()); const d=await r.json(); return Array.isArray(d)?d[0]:d; },
+  async update(t,id,patch){ const r=await fetch(`${SB_URL}/rest/v1/${t}?id=eq.${encodeURIComponent(id)}`,{method:"PATCH",headers:sb.h,body:JSON.stringify(patch)}); if(!r.ok)throw new Error(await r.text()); },
+  async delete(t,id){ const r=await fetch(`${SB_URL}/rest/v1/${t}?id=eq.${encodeURIComponent(id)}`,{method:"DELETE",headers:sb.h}); if(!r.ok)throw new Error(await r.text()); },
+};
+
+const LOCATIONS  = [{id:"ZC",name:"Zebras Crossing"},{id:"EC",name:"Elephants Crossing"},{id:"SC",name:"Schamach"}];
+const LOC_COLORS = {ZC:"#B8935A",EC:"#5B8CC4",SC:"#7BAE7F"};
