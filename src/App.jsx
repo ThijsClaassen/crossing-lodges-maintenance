@@ -2309,6 +2309,10 @@ function AuthenticatedApp() {
               </>)}
             </div>
             <span className="month-badge">{monthLabel}</span>
+            <button onClick={logout} title="Sign out"
+              style={{background:"none",border:`1px solid ${T.border}`,borderRadius:6,color:T.muted,fontSize:11,fontWeight:600,cursor:"pointer",padding:"5px 10px",flexShrink:0}}>
+              Log out
+            </button>
           </div>
         </div>
 
