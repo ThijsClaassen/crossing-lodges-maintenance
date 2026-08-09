@@ -110,10 +110,16 @@ export const css = `
   .mobile-loc-bar{display:none}
   @media (max-width:768px){
     .sidebar{display:none}
-    .bottom-nav{display:flex;position:fixed;bottom:0;left:0;right:0;background:${T.panel};border-top:1px solid ${T.border};z-index:100;padding-bottom:env(safe-area-inset-bottom)}
-    .bn-item{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:7px 2px;border:none;background:none;color:${T.muted};font-family:'Inter',sans-serif;font-size:9px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;cursor:pointer;min-height:54px}
-    .bn-item.active{color:${T.gold}}
-    .main{padding-bottom:70px}
+    .bottom-nav{display:flex;position:fixed;bottom:0;left:0;right:0;background:${T.panel};border-top:1px solid ${T.border};z-index:100;padding:8px 12px;padding-bottom:calc(8px + env(safe-area-inset-bottom))}
+    .nav-menu-btn{width:100%;display:flex;align-items:center;justify-content:center;gap:8px;padding:11px 14px;border-radius:10px;border:1px solid ${T.gold};background:rgba(184,147,90,.12);color:${T.goldLt};font-family:'Inter',sans-serif;font-weight:700;font-size:14px;cursor:pointer}
+    .nav-overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:flex-end;justify-content:center;z-index:200}
+    .nav-sheet{width:100%;max-width:560px;max-height:75vh;overflow-y:auto;background:${T.panel};border:1px solid ${T.border};border-bottom:none;border-radius:16px 16px 0 0}
+    .nav-sheet-header{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid ${T.border};position:sticky;top:0;background:${T.panel}}
+    .nav-sheet-title{font-family:'Cormorant Garamond',serif;font-size:18px;font-weight:600;color:${T.goldLt}}
+    .nav-sheet-close{padding:5px 12px;border-radius:8px;border:1px solid ${T.border};background:transparent;color:${T.cream};font-family:'Inter',sans-serif;font-size:13px;cursor:pointer}
+    .nav-sheet-item{display:block;width:100%;text-align:left;padding:14px 16px;border:none;border-bottom:1px solid ${T.border};background:none;color:${T.cream};font-family:'Inter',sans-serif;font-weight:500;font-size:14px;cursor:pointer}
+    .nav-sheet-item.active{background:rgba(184,147,90,.12);color:${T.goldLt};font-weight:700}
+    .main{padding-bottom:76px}
     .topbar{padding:9px 14px}
     .page-title{font-size:15px}
     .month-badge,.loc-badge{font-size:10px;padding:3px 8px}
@@ -131,7 +137,7 @@ export const css = `
     .cal-job{font-size:8px;padding:2px 3px}
     .cal-grid{gap:2px}
   }
-  @media (min-width:769px){.mobile-loc-bar{display:none!important}}
+  @media (min-width:769px){.mobile-loc-bar{display:none!important}.nav-overlay{display:none!important}}
   ::-webkit-scrollbar{width:4px;height:4px}
   ::-webkit-scrollbar-thumb{background:${T.border};border-radius:3px}
 `;
