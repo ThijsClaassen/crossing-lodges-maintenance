@@ -6,6 +6,7 @@ import { LOGO_DATA } from "./logo.js";
 import Login from "./Login.jsx";
 import SetPassword from "./SetPassword.jsx";
 import { CompanyProvider, useCompany } from "./CompanyContext.jsx";
+import { uploadPurchaseSlip, getSlipUrl } from "./slipUpload.js";
 
 const fmtR  = n=>`R ${Number(n||0).toLocaleString("en-ZA",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 const fmtN  = n=>Number(n||0).toLocaleString("en-ZA",{maximumFractionDigits:3});
@@ -13,6 +14,53 @@ const uid   = ()=>crypto.randomUUID();
 const toISO   = d=>{ if(!d)return""; const[dd,mm,yyyy]=d.split("/"); return `${yyyy}-${mm}-${dd}`; };
 const fromISO = d=>{ if(!d)return""; const[yyyy,mm,dd]=d.split("-"); return `${dd}/${mm}/${yyyy}`; };
 const today = ()=>{ const d=new Date(); return `${String(d.getDate()).padStart(2,"0")}/${String(d.getMonth()+1).padStart(2,"0")}/${d.getFullYear()}`; };
+
+// ─── SLIP SCANNING HELPERS ───────────────────────────────────────────────────
+// Shared by the Purchases tab's "Scan slip" flow (2026-08-12) — resize a
+// photo before it's sent anywhere (keeps it well under the serverless body
+// limit and speeds up the AI read), fuzzy-match the OCR'd line text against
+// the item list so confident matches can be pre-filled, and apply/re-apply
+// VAT the same transparent way Food/Beverage's slip scanner does.
+async function resizeImageFile(file, maxDim=1800, quality=0.85) {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, maxDim/Math.max(bitmap.width, bitmap.height));
+  const w = Math.round(bitmap.width*scale), h = Math.round(bitmap.height*scale);
+  const canvas = document.createElement("canvas");
+  canvas.width=w; canvas.height=h;
+  canvas.getContext("2d").drawImage(bitmap,0,0,w,h);
+  return new Promise(resolve=>canvas.toBlob(blob=>resolve(blob),"image/jpeg",quality));
+}
+function blobToBase64(blob) {
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=()=>resolve(String(reader.result).split(",")[1]||"");
+    reader.onerror=reject;
+    reader.readAsDataURL(blob);
+  });
+}
+function normalizeForMatch(s){ return (s||"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim(); }
+function matchScore(a,b){
+  const na=normalizeForMatch(a), nb=normalizeForMatch(b);
+  if(!na||!nb)return 0;
+  if(na===nb)return 1;
+  const ta=na.split(" ").filter(Boolean), tb=nb.split(" ").filter(Boolean);
+  const setB=new Set(tb);
+  let overlap=0; for(const t of ta) if(setB.has(t)) overlap++;
+  const overlapScore=overlap/Math.max(ta.length,tb.length);
+  const bonus=(na.includes(nb)||nb.includes(na))?0.2:0;
+  return Math.min(1, overlapScore+bonus);
+}
+const MATCH_CONFIDENT=0.55;
+function findBestItemMatch(text, items){
+  let best=null, bestScore=0;
+  for(const it of items){ const s=matchScore(text,it.description); if(s>bestScore){bestScore=s;best=it;} }
+  return {match:best, score:bestScore, confident:bestScore>=MATCH_CONFIDENT};
+}
+function round2(n){ return Math.round((Number(n)||0)*100)/100; }
+function applyVatToRows(rows, incl, vatRate){
+  const divisor = incl ? 1+(Number(vatRate)||0)/100 : 1;
+  return rows.map(r=>({...r, total_cost: round2(r.raw_total/divisor)}));
+}
 
 // ─── AUTH ────────────────────────────────────────────────────────────────────
 // Real Supabase Auth replaces the old shared staff/admin password checked
@@ -311,18 +359,199 @@ function Destinations({ locId, destinations, setDestinations, companyId }) {
   </>);
 }
 
+// ─── SCAN A SLIP (Purchases) ─────────────────────────────────────────────────
+// Photograph or upload a purchase slip/invoice, let /api/parse-slip (Claude
+// vision, server-side) read the line items, then review/correct before
+// anything saves. The photo itself is uploaded and kept regardless of
+// whether the OCR read is used — that's the actual 7-year compliance
+// record (see add_purchase_slips.sql); the parsed line items are just a
+// convenience so nobody has to retype what's already printed on the slip.
+function MaintSlipScanCard({ items, locId, companyId, onSaved }) {
+  const [scanning,setScanning]=useState(false);
+  const [scanError,setScanError]=useState("");
+  const [review,setReview]=useState(null);
+  const [saving,setSaving]=useState(false);
+  const [saveStatus,setSaveStatus]=useState("");
+  const fileRef=useRef(null);
+
+  const handleFile=async e=>{
+    const file=e.target.files?.[0];
+    e.target.value="";
+    if(!file)return;
+    setScanError(""); setSaveStatus(""); setScanning(true);
+    try{
+      const resized=await resizeImageFile(file);
+      const base64=await blobToBase64(resized);
+      const res=await fetch("/api/parse-slip",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({image_base64:base64,media_type:"image/jpeg"})});
+      const data=await res.json();
+      if(!res.ok) throw new Error(data.error||"Could not read that slip.");
+      const pricesIncludeVat = typeof data.amounts_include_vat_guess==="boolean" ? data.amounts_include_vat_guess : true;
+      const vatRate = data.vat_rate_guess ?? 15;
+      const rowsRaw=(data.line_items||[]).map((li,idx)=>{
+        const m=findBestItemMatch(li.raw_text, items);
+        const rawTotal = li.total_price ?? ((li.unit_price&&li.qty) ? li.unit_price*li.qty : 0);
+        return { key: idx, raw_text: li.raw_text, item_id: m.confident?m.match.id:"", confident:m.confident, guessName:m.match?.description||"", qty: li.qty??1, raw_total:rawTotal, total_cost:rawTotal, skip:false };
+      });
+      setReview({
+        date: fromISO(data.date_guess || new Date().toISOString().slice(0,10)),
+        supplier: data.supplier_guess||"",
+        slipTotal: data.slip_total ?? null,
+        pricesIncludeVat, vatRate,
+        rows: applyVatToRows(rowsRaw, pricesIncludeVat, vatRate),
+        photoBlob: resized,
+      });
+    }catch(err){ setScanError(err.message||"Something went wrong reading that slip."); }
+    finally{ setScanning(false); }
+  };
+
+  const updateRow=(key,patch)=>setReview(r=>({...r, rows:r.rows.map(row=>row.key===key?{...row,...patch}:row)}));
+  const setPricesIncludeVat=val=>setReview(r=>({...r, pricesIncludeVat:val, rows:applyVatToRows(r.rows,val,r.vatRate)}));
+  const setVatRate=val=>setReview(r=>({...r, vatRate:val, rows:applyVatToRows(r.rows,r.pricesIncludeVat,val)}));
+  const cancelReview=()=>{ setReview(null); setScanError(""); setSaveStatus(""); };
+
+  const approve=async()=>{
+    const toSave=review.rows.filter(r=>!r.skip && r.item_id && Number(r.qty)>0);
+    if(toSave.length===0){ setSaveStatus("Nothing to save — pick an item for at least one line, or cancel."); return; }
+    setSaving(true); setSaveStatus("");
+    try{
+      const slip = await uploadPurchaseSlip({
+        companyId, locationId: locId, blob: review.photoBlob,
+        supplierGuess: review.supplier, dateGuess: toISO(review.date), slipTotalGuess: review.slipTotal,
+      });
+      const saved=[];
+      for(const r of toSave){
+        const row={id:uid(), location_id:locId, item_id:r.item_id, date:review.date,
+          qty:Number(r.qty), total_cost:Number(r.total_cost)||0,
+          supplier:review.supplier||null, notes:null, company_id:companyId, slip_id:slip.id};
+        await sb.insert("maint_purchases", row);
+        saved.push(row);
+      }
+      onSaved(saved, slip);
+      setSaveStatus(`Saved ${saved.length} purchase${saved.length===1?"":"s"} and attached the slip photo.`);
+      setReview(null);
+    }catch(err){ setSaveStatus(`Could not save: ${err.message}`); }
+    finally{ setSaving(false); }
+  };
+
+  return (
+    <div className="card" style={{marginBottom:16}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div className="section-title" style={{margin:0}}>Scan a purchase slip</div>
+        {!review && <button className="btn btn-ghost" onClick={()=>fileRef.current?.click()} disabled={scanning}>{scanning?"Reading slip…":"Scan / photograph slip"}</button>}
+      </div>
+      <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={handleFile}/>
+      {!review && <div style={{fontSize:12,color:T.muted,marginTop:6}}>Take a photo (or upload one) of a supplier delivery slip or invoice — items, quantities and prices are read automatically, and the photo itself is kept for your records. Nothing saves until you check the list and press Approve.</div>}
+      {scanError && <div style={{color:T.danger,fontSize:12,marginTop:8}}>{scanError}</div>}
+
+      {review && (
+        <div style={{marginTop:10}}>
+          <div className="grid2">
+            <div className="field"><label>Date</label><DateField value={review.date} onChange={v=>setReview({...review,date:v})}/></div>
+            <div className="field"><label>Supplier</label><input type="text" value={review.supplier} onChange={e=>setReview({...review,supplier:e.target.value})}/></div>
+            <div className="field"><label>Slip prices</label>
+              <select value={review.pricesIncludeVat?"incl":"excl"} onChange={e=>setPricesIncludeVat(e.target.value==="incl")}>
+                <option value="incl">Include VAT</option>
+                <option value="excl">Already exclude VAT</option>
+              </select>
+            </div>
+            {review.pricesIncludeVat && <div className="field"><label>VAT rate %</label><input type="number" value={review.vatRate} onChange={e=>setVatRate(e.target.value)}/></div>}
+          </div>
+          <div style={{fontSize:12,color:T.muted,margin:"8px 0"}}>
+            {review.rows.length} line{review.rows.length===1?"":"s"} read from the slip. Green = matched automatically — check it's right. Amber = pick the item, or tick Skip to leave it out.
+            {review.slipTotal!=null && <> Slip total printed: <strong style={{color:T.cream}}>{fmtR(review.slipTotal)}</strong>.</>}
+          </div>
+          <div className="tbl-wrap"><table className="tbl">
+            <thead><tr><th>Slip text</th><th>Item</th><th className="num">Qty</th><th className="num">Total cost</th><th>Skip</th></tr></thead>
+            <tbody>
+              {review.rows.map(r=>(
+                <tr key={r.key} style={{background:r.skip?"rgba(0,0,0,.15)":r.confident?"rgba(90,155,106,.06)":"rgba(184,147,90,.08)"}}>
+                  <td style={{fontSize:12,color:T.muted,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.raw_text}</td>
+                  <td>
+                    <select value={r.item_id} onChange={e=>updateRow(r.key,{item_id:e.target.value})} style={{minWidth:160}}>
+                      <option value="">— Select item —</option>
+                      {items.map(it=><option key={it.id} value={it.id}>{it.description}</option>)}
+                    </select>
+                  </td>
+                  <td className="num"><input type="number" style={{width:70}} value={r.qty} onChange={e=>updateRow(r.key,{qty:e.target.value})}/></td>
+                  <td className="num"><input type="number" step="0.01" style={{width:90}} value={r.total_cost} onChange={e=>updateRow(r.key,{total_cost:e.target.value})}/></td>
+                  <td><input type="checkbox" checked={r.skip} onChange={e=>updateRow(r.key,{skip:e.target.checked})}/></td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+          {saveStatus && <div style={{fontSize:12,color:saveStatus.startsWith("Could not")?T.danger:T.ok,marginTop:8}}>{saveStatus}</div>}
+          <div style={{display:"flex",gap:9,marginTop:12}}>
+            <button className="btn btn-primary" onClick={approve} disabled={saving}>{saving?"Saving…":"Approve & save"}</button>
+            <button className="btn btn-ghost" onClick={cancelReview} disabled={saving}>Cancel</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Manual fallback for when the scanner can't read a slip (or wasn't used) —
+// just uploads the photo and links it, no OCR. Used both for a brand-new
+// hand-entered purchase (attaches while saving) and for an already-saved
+// purchase row that didn't get a slip at the time (attaches after the fact).
+function AttachSlipButton({ companyId, locId, purchaseId, onAttached, label="Attach slip" }) {
+  const [uploading,setUploading]=useState(false);
+  const fileRef=useRef(null);
+  const handleFile=async e=>{
+    const file=e.target.files?.[0]; e.target.value="";
+    if(!file)return;
+    setUploading(true);
+    try{
+      const resized=await resizeImageFile(file);
+      const slip=await uploadPurchaseSlip({companyId, locationId:locId, blob:resized});
+      if(purchaseId) await sb.update("maint_purchases", purchaseId, {slip_id:slip.id});
+      onAttached(slip, purchaseId);
+    }catch(err){ alert("Could not attach the slip: "+err.message); }
+    finally{ setUploading(false); }
+  };
+  return (<>
+    <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={handleFile}/>
+    <button type="button" className="btn btn-ghost btn-sm" onClick={()=>fileRef.current?.click()} disabled={uploading}>{uploading?"Uploading…":label}</button>
+  </>);
+}
+
+function ViewSlipLink({ storagePath }) {
+  const [loading,setLoading]=useState(false);
+  const open=async()=>{
+    setLoading(true);
+    try{ const url=await getSlipUrl(storagePath); window.open(url,"_blank","noopener"); }
+    catch(err){ alert("Could not open the slip: "+err.message); }
+    finally{ setLoading(false); }
+  };
+  return <button className="btn btn-ghost btn-sm" onClick={open} disabled={loading}>{loading?"…":"View slip"}</button>;
+}
+
 // ─── PURCHASES ───────────────────────────────────────────────────────────────
-function Purchases({ locId, items, purchases, setPurchases, isAdmin, companyId }) {
+function Purchases({ locId, items, purchases, setPurchases, isAdmin, companyId, slips, onSlipAttached }) {
   const [showForm,setShowForm]=useState(false);
-  const blank={item_id:"",date:today(),qty:"",total_cost:"",supplier:"",notes:""};
+  const blank={item_id:"",date:today(),qty:"",total_cost:"",supplier:"",notes:"",pendingSlipBlob:null,pendingSlipName:""};
   const [form,setForm]=useState(blank);
   const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
+  const pickSlipFile=async e=>{
+    const file=e.target.files?.[0]; e.target.value="";
+    if(!file)return;
+    const resized=await resizeImageFile(file);
+    setForm(p=>({...p,pendingSlipBlob:resized,pendingSlipName:file.name}));
+  };
   const save=async()=>{
     if(!form.item_id||!form.qty)return;
-    const row={id:uid(),location_id:locId,item_id:form.item_id,date:form.date,
-      qty:parseFloat(form.qty)||0,total_cost:parseFloat(form.total_cost)||0,
-      supplier:form.supplier||null,notes:form.notes||null,company_id:companyId};
-    try{await sb.insert("maint_purchases",row);setPurchases(p=>[...p,row]);setForm(blank);setShowForm(false);}
+    let slipId=null;
+    try{
+      if(form.pendingSlipBlob){
+        const slip=await uploadPurchaseSlip({companyId, locationId:locId, blob:form.pendingSlipBlob});
+        slipId=slip.id;
+        onSlipAttached(slip);
+      }
+      const row={id:uid(),location_id:locId,item_id:form.item_id,date:form.date,
+        qty:parseFloat(form.qty)||0,total_cost:parseFloat(form.total_cost)||0,
+        supplier:form.supplier||null,notes:form.notes||null,company_id:companyId,slip_id:slipId};
+      await sb.insert("maint_purchases",row);setPurchases(p=>[...p,row]);setForm(blank);setShowForm(false);
+    }
     catch(e){alert("Save failed: "+e.message);}
   };
   const remove=async id=>{
@@ -333,6 +562,7 @@ function Purchases({ locId, items, purchases, setPurchases, isAdmin, companyId }
   const totalUnits=purchases.reduce((s,p)=>s+(p.qty||0),0);
   const itemName=id=>items.find(i=>i.id===id)?.description||id;
   return (<>
+    <MaintSlipScanCard items={items} locId={locId} companyId={companyId} onSaved={(saved,slip)=>{setPurchases(p=>[...p,...saved]);onSlipAttached(slip);}}/>
     <div className="strip">
       <div className="strip-item"><div className="strip-label">Total Spend</div><div className="strip-val">{fmtR(totalSpend)}</div></div>
       <div className="strip-item"><div className="strip-label">Units Purchased</div><div className="strip-val">{fmtN(totalUnits)}</div></div>
@@ -343,7 +573,7 @@ function Purchases({ locId, items, purchases, setPurchases, isAdmin, companyId }
     </div>
     <div className="tbl-wrap"><table className="tbl">
       <thead><tr><th>Date</th><th>Item</th><th className="num">Qty</th><th className="num">Total Cost</th>
-        <th className="num">Cost/Unit</th><th>Supplier</th><th>Notes</th><th></th></tr></thead>
+        <th className="num">Cost/Unit</th><th>Supplier</th><th>Notes</th><th>Slip</th><th></th></tr></thead>
       <tbody>
         {purchases.map(p=>(
           <tr key={p.id}>
@@ -354,10 +584,15 @@ function Purchases({ locId, items, purchases, setPurchases, isAdmin, companyId }
             <td className="num" style={{color:T.muted,fontSize:12}}>{p.qty>0?fmtR((p.total_cost||0)/p.qty):"—"}</td>
             <td style={{fontSize:12,color:T.muted}}>{p.supplier||"—"}</td>
             <td style={{fontSize:12,color:T.muted}}>{p.notes||"—"}</td>
+            <td>
+              {p.slip_id && slips[p.slip_id] ? <ViewSlipLink storagePath={slips[p.slip_id].storage_path}/>
+                : <AttachSlipButton companyId={companyId} locId={locId} purchaseId={p.id}
+                    onAttached={(slip)=>{onSlipAttached(slip);setPurchases(ps=>ps.map(x=>x.id===p.id?{...x,slip_id:slip.id}:x));}}/>}
+            </td>
             <td>{isAdmin&&<button className="btn btn-danger btn-sm" onClick={()=>remove(p.id)}>x</button>}</td>
           </tr>
         ))}
-        {purchases.length===0&&<tr><td colSpan={8} className="empty">No purchases logged yet</td></tr>}
+        {purchases.length===0&&<tr><td colSpan={9} className="empty">No purchases logged yet</td></tr>}
       </tbody>
     </table></div>
     {showForm&&(
@@ -383,6 +618,11 @@ function Purchases({ locId, items, purchases, setPurchases, isAdmin, companyId }
             </div>
           )}
           <div className="field"><label>Notes</label><input type="text" value={form.notes} onChange={f("notes")}/></div>
+          <div className="field">
+            <label>Slip photo (optional — use if you didn't use Scan above)</label>
+            <input type="file" accept="image/*" capture="environment" onChange={pickSlipFile}/>
+            {form.pendingSlipName && <div style={{fontSize:11,color:T.ok,marginTop:4}}>Attached: {form.pendingSlipName}</div>}
+          </div>
           <div style={{display:"flex",gap:9}}>
             <button className="btn btn-primary" onClick={save}>Save Purchase</button>
             <button className="btn btn-ghost" onClick={()=>setShowForm(false)}>Cancel</button>
@@ -2088,6 +2328,12 @@ function AuthenticatedApp() {
   const [allData,       setAllData]      = useState({items:{},purchases:{},issues:{},counts:{},destinations:{},jobs:{},templates:{}});
   const [jobMaterials,     setJobMaterials]     = useState([]);
   const [templateMaterials,setTemplateMaterials]= useState([]);
+  // Purchase slip photos (2026-08-12) — keyed by purchase_slips.id, loaded
+  // company-wide (not per-location) since it's just a lookup for the "View
+  // slip" link and the manual Attach flow, not something rendered as a list
+  // of its own yet.
+  const [slips,          setSlips]        = useState({});
+  const onSlipAttached = (slip)=>{ if(slip) setSlips(s=>({...s,[slip.id]:slip})); };
   const [loading,       setLoading]      = useState(true);
   const [loadErr,       setLoadErr]      = useState(null);
   const isAdmin = role==="admin";
@@ -2099,7 +2345,7 @@ function AuthenticatedApp() {
     setLoading(true);setLoadErr(null);
     try{
       const cf = `company_id=eq.${companyId}`;
-      const[itemRows,purchRows,issueRows,countRows,destRows,jobRows,tplRows,jobMatRows,tplMatRows]=await Promise.all([
+      const[itemRows,purchRows,issueRows,countRows,destRows,jobRows,tplRows,jobMatRows,tplMatRows,slipRows]=await Promise.all([
         sb.select("maint_items", `active=eq.true&${cf}&order=sort_order.asc`),
         sb.select("maint_purchases", cf),
         sb.select("maint_issues", cf),
@@ -2109,7 +2355,10 @@ function AuthenticatedApp() {
         sb.select("maint_job_templates", `active=eq.true&${cf}`),
         sb.select("maint_job_materials", cf),
         sb.select("maint_template_materials", cf),
+        sb.select("purchase_slips", `app=eq.maintenance&${cf}`),
       ]);
+      const slipMap={}; (slipRows||[]).forEach(s=>{slipMap[s.id]=s;});
+      setSlips(slipMap);
       const byLoc=arr=>{
         const m={};LOCATIONS.forEach(l=>m[l.id]=[]);
         arr.forEach(r=>{if(m[r.location_id])m[r.location_id].push(r);});return m;
@@ -2322,7 +2571,7 @@ function AuthenticatedApp() {
 
         <div className="section">
           {page==="dashboard"    && <Dashboard items={items} purchases={purchases} issues={issues} counts={counts}/>}
-          {page==="purchases"    && <Purchases locId={locId} items={items} purchases={purchases} setPurchases={setPurchases} isAdmin={isAdmin} companyId={companyId}/>}
+          {page==="purchases"    && <Purchases locId={locId} items={items} purchases={purchases} setPurchases={setPurchases} isAdmin={isAdmin} companyId={companyId} slips={slips} onSlipAttached={onSlipAttached}/>}
           {page==="issues"       && <Issues locId={locId} items={items} issues={issues} setIssues={setIssues}
                                        destinations={destinations} purchases={purchases} jobs={jobs} isAdmin={isAdmin} companyId={companyId}/>}
           {page==="count"        && <StockCount locId={locId} items={items} purchases={purchases} issues={issues} counts={counts} setCounts={setCounts} companyId={companyId}/>}
