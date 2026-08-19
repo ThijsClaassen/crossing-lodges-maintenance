@@ -1149,6 +1149,29 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
   },[projects, workstreamStatus, progressLogs, wsById, projectLocIds, locId]);
   const milestonesOn = dt => milestones.filter(m=>sameDay(parseISODate(m.date), dt));
 
+  // Workstream date spans (2026-08-19) — Thijs wanted a workstream visible
+  // across its whole run, not just as a single-day marker on its finish
+  // date. Runs from baseline_date to its live projected_finish_date
+  // (falls back to the project's target_end_date while there's no
+  // progress logged yet to project from, and to today if neither is set
+  // — so it never spans indefinitely). Rendered as a thin strip on every
+  // day in range, separate from the point-in-time milestone/progress
+  // markers above.
+  const wsStatusById = useMemo(()=>{ const m={}; (workstreamStatus||[]).forEach(s=>{m[s.id]=s;}); return m; },[workstreamStatus]);
+  const workstreamSpans = useMemo(()=>{
+    const list = [];
+    (workstreams||[]).forEach(w=>{
+      if (projectLocIds[w.project_id]!==locId || !w.baseline_date) return;
+      const s = wsStatusById[w.id];
+      const endStr = s?.projected_finish_date || s?.project_target_end_date || w.baseline_date;
+      const start = parseISODate(w.baseline_date), end = parseISODate(endStr);
+      if (!start || !end || end<start) return;
+      list.push({ id:w.id, name:w.name, start, end });
+    });
+    return list;
+  },[workstreams, wsStatusById, projectLocIds, locId]);
+  const spansOn = dt => workstreamSpans.filter(sp=>dt>=sp.start && dt<=sp.end);
+
   const statusOf = job => {
     if(job.status==="completed") return "completed";
     if(job.status==="cancelled") return "cancelled";
@@ -1215,6 +1238,10 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
                 if(jobId) rescheduleJob(jobId, dateKey);
               }}>
               <div className="cal-date">{dt.getDate()}</div>
+              {spansOn(dt).length>0 && (
+                <div title={spansOn(dt).map(sp=>sp.name).join(", ")}
+                  style={{height:4,borderRadius:2,background:T.ok,opacity:.55,marginBottom:3}}/>
+              )}
               {dayJobs.slice(0,3).map(j=>{
                 const st=statusOf(j);
                 const canDrag = isAdmin && (st==="scheduled"||st==="overdue");
@@ -2356,7 +2383,11 @@ function daysUntil(iso) {
 }
 function fmtQty(n, unit) {
   const v = Number(n || 0);
-  return unit === "percent" ? `${Math.round(v*100)}%` : `${fmtN(v)} ${WORKSTREAM_UNIT_LABEL[unit]||""}`;
+  // Percent-unit quantities are stored as plain 0-100 numbers (type 100
+  // to mean "100%"), same scale a person naturally types into the Target
+  // Qty / Qty Done fields — NOT a 0-1 fraction. (Was previously *100'd
+  // here on the wrong assumption, which is why 100 rendered as 10000%.)
+  return unit === "percent" ? `${Math.round(v)}%` : `${fmtN(v)} ${WORKSTREAM_UNIT_LABEL[unit]||""}`;
 }
 function statusBadgeColor(s) {
   return s === "on_track" ? T.ok : s === "behind" ? T.danger : s === "complete" ? T.gold : T.muted;
