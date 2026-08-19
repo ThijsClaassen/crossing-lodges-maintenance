@@ -2598,6 +2598,8 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, setWo
       </tbody>
     </table></div>
 
+    <WorkstreamSuggestions project={project} workstreams={workstreams} statusByWsId={statusByWsId}/>
+
     {logFor && (
       <WeeklyLogForm workstream={logFor} companyId={companyId} setProgressLogs={setProgressLogs}
         refreshWorkstreamStatus={refreshWorkstreamStatus}
@@ -2619,6 +2621,78 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, setWo
         onClose={()=>setHistoryFor(null)}/>
     )}
   </>);
+}
+
+// "AI Suggestions" panel (2026-08-19) — compares Thijs's own gut-feel
+// estimate (estimate_weeks, entered per workstream) against the tracked
+// pace, and — when a workstream is running behind the project deadline —
+// suggests roughly how much crew to add to catch up. Everything here is
+// read straight off project_workstream_status's estimated_finish_date /
+// avg_crew_size / suggested_crew_size columns (live-computed, see
+// add_project_workstream_estimates.sql) — no separate calculation here,
+// just plain-language framing of numbers the view already worked out.
+// Crew suggestions assume output scales roughly linearly with crew size,
+// inferred from the workstream's own logged history — a rough guide, not
+// a guarantee, and said as much in the copy below.
+function WorkstreamSuggestions({ project, workstreams, statusByWsId }) {
+  const rows = workstreams.map(w=>({ w, s: statusByWsId[w.id] })).filter(({s})=>s);
+  if (rows.length===0) return null;
+
+  return (
+    <div style={{marginTop:22}}>
+      <div className="section-title">AI Suggestions</div>
+      <div style={{fontSize:12,color:T.muted,marginBottom:12,lineHeight:1.6}}>
+        Compares your own estimate against the tracked pace, and — when a workstream is running behind —
+        suggests roughly how much crew to add to still hit {project.target_end_date||"the target date"}.
+        Crew suggestions assume output scales roughly linearly with crew size, based on what you've logged
+        so far — a rough guide, not a guarantee.
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:10}}>
+        {rows.map(({w,s})=>{
+          const hasLogs = s.status !== "no_data";
+          let estimateNote = null;
+          if (w.estimate_weeks!=null) {
+            let comparison = "";
+            if (s.projected_finish_date && s.estimated_finish_date) {
+              const diffDays = Math.round((new Date(s.projected_finish_date)-new Date(s.estimated_finish_date))/86400000);
+              const diffWeeks = Math.round(Math.abs(diffDays)/7);
+              comparison = diffWeeks===0 ? " Tracking right on your estimate."
+                : ` At the current pace it's tracking ${diffWeeks} week${diffWeeks===1?"":"s"} ${diffDays>0?"slower":"faster"} than you guessed.`;
+            }
+            estimateNote = `You estimated ~${fmtN(w.estimate_weeks)} week${+w.estimate_weeks===1?"":"s"}` +
+              (s.estimated_finish_date?` (around ${s.estimated_finish_date}).`:".") + comparison;
+          }
+          return (
+            <div key={w.id} style={{background:"rgba(0,0,0,.2)",border:`1px solid ${T.border}`,borderRadius:8,padding:"12px 14px"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                <div style={{fontWeight:600,color:T.cream}}>{w.name}</div>
+                <span className="badge" style={{background:`${statusBadgeColor(s.status)}22`,color:statusBadgeColor(s.status),border:`1px solid ${statusBadgeColor(s.status)}55`}}>
+                  {statusBadgeLabel(s.status)}
+                </span>
+              </div>
+              {!hasLogs ? (
+                <div style={{fontSize:12,color:T.muted}}>No progress logged yet — nothing to compare against.</div>
+              ) : (<>
+                {estimateNote && <div style={{fontSize:12,color:T.muted,marginBottom:4}}>{estimateNote}</div>}
+                {s.status==="behind" && s.suggested_crew_size!=null && (
+                  <div style={{fontSize:12,color:T.danger}}>
+                    &#9888; At the current crew ({s.avg_crew_size!=null?`~${fmtN(s.avg_crew_size)}`:"—"}), this won't
+                    make {project.target_end_date||"the target date"}. Consider bumping crew to ~{s.suggested_crew_size} to catch up.
+                  </div>
+                )}
+                {s.status==="behind" && s.suggested_crew_size==null && (
+                  <div style={{fontSize:12,color:T.danger}}>&#9888; Running behind pace for the target date.</div>
+                )}
+                {s.status==="on_track" && (
+                  <div style={{fontSize:12,color:T.ok}}>&#10003; On track to hit {project.target_end_date||"the target date"} at the current crew size.</div>
+                )}
+              </>)}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 // Admin-only: full log history for a single workstream, with edit/delete
@@ -2776,7 +2850,9 @@ function WeeklyLogForm({ workstream, companyId, setProgressLogs, refreshWorkstre
 }
 
 function EditWorkstreamForm({ workstream, setWorkstreams, refreshWorkstreamStatus, onClose }) {
-  const [form, setForm] = useState({...workstream, target_qty:String(workstream.target_qty), baseline_qty:String(workstream.baseline_qty), budget_cost: workstream.budget_cost==null?"":String(workstream.budget_cost)});
+  const [form, setForm] = useState({...workstream, target_qty:String(workstream.target_qty), baseline_qty:String(workstream.baseline_qty),
+    budget_cost: workstream.budget_cost==null?"":String(workstream.budget_cost),
+    estimate_weeks: workstream.estimate_weeks==null?"":String(workstream.estimate_weeks)});
   const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
   const [saving, setSaving] = useState(false);
 
@@ -2788,6 +2864,7 @@ function EditWorkstreamForm({ workstream, setWorkstreams, refreshWorkstreamStatu
         target_qty: parseFloat(form.target_qty)||0, baseline_qty: parseFloat(form.baseline_qty)||0,
         baseline_date: form.baseline_date||null,
         budget_cost: form.budget_cost===""?null:parseFloat(form.budget_cost),
+        estimate_weeks: form.estimate_weeks===""?null:parseFloat(form.estimate_weeks),
         status: form.status,
       };
       await sb.update("project_workstreams", workstream.id, patch);
@@ -2833,6 +2910,9 @@ function EditWorkstreamForm({ workstream, setWorkstreams, refreshWorkstreamStatu
           <div className="field"><label>Baseline Date</label><input type="date" value={form.baseline_date||""} onChange={f("baseline_date")}/></div>
           <div className="field"><label>Budget Cost (R, optional)</label><input type="number" step="0.01" value={form.budget_cost} onChange={f("budget_cost")}/></div>
         </div>
+        <div className="field"><label>Your Estimate (weeks, optional)</label>
+          <input type="number" step="0.5" placeholder="e.g. 10" value={form.estimate_weeks} onChange={f("estimate_weeks")}/>
+        </div>
         <div style={{display:"flex",gap:9}}>
           <button className="btn btn-primary" onClick={save} disabled={saving}>{saving?"Saving...":"Save Changes"}</button>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
@@ -2845,7 +2925,7 @@ function EditWorkstreamForm({ workstream, setWorkstreams, refreshWorkstreamStatu
 
 function NewWorkstreamForm({ project, companyId, setWorkstreams, refreshWorkstreamStatus, onClose }) {
   const isoToday = new Date().toISOString().slice(0,10);
-  const [form, setForm] = useState({name:"",unit:"km",target_qty:"",baseline_qty:"0",baseline_date:isoToday,budget_cost:""});
+  const [form, setForm] = useState({name:"",unit:"km",target_qty:"",baseline_qty:"0",baseline_date:isoToday,budget_cost:"",estimate_weeks:""});
   const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
   const [saving, setSaving] = useState(false);
 
@@ -2858,6 +2938,7 @@ function NewWorkstreamForm({ project, companyId, setWorkstreams, refreshWorkstre
         target_qty: parseFloat(form.target_qty)||0, baseline_qty: parseFloat(form.baseline_qty)||0,
         baseline_date: form.baseline_date||null,
         budget_cost: form.budget_cost===""?null:parseFloat(form.budget_cost),
+        estimate_weeks: form.estimate_weeks===""?null:parseFloat(form.estimate_weeks),
         status: "not_started",
       };
       const ins = await sb.insert("project_workstreams", row);
@@ -2886,6 +2967,9 @@ function NewWorkstreamForm({ project, companyId, setWorkstreams, refreshWorkstre
           <div className="field"><label>Baseline Date</label><input type="date" value={form.baseline_date} onChange={f("baseline_date")}/></div>
         </div>
         <div className="field"><label>Budget Cost (R, optional)</label><input type="number" step="0.01" value={form.budget_cost} onChange={f("budget_cost")}/></div>
+        <div className="field"><label>Your Estimate (weeks, optional)</label>
+          <input type="number" step="0.5" placeholder="e.g. 10" value={form.estimate_weeks} onChange={f("estimate_weeks")}/>
+        </div>
         <div style={{display:"flex",gap:9}}>
           <button className="btn btn-primary" onClick={save} disabled={saving}>{saving?"Saving...":"Add Workstream"}</button>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
@@ -3031,7 +3115,7 @@ function AuthenticatedApp() {
       setJobMaterials(jobMatRows.map(r=>({...r,qty_planned:+r.qty_planned,qty_used:r.qty_used==null?null:+r.qty_used})));
       setTemplateMaterials(tplMatRows.map(r=>({...r,qty:+r.qty})));
       setProjects(projectRows);
-      setWorkstreams(workstreamRows.map(r=>({...r,target_qty:+r.target_qty,baseline_qty:+r.baseline_qty,budget_cost:r.budget_cost==null?null:+r.budget_cost})));
+      setWorkstreams(workstreamRows.map(r=>({...r,target_qty:+r.target_qty,baseline_qty:+r.baseline_qty,budget_cost:r.budget_cost==null?null:+r.budget_cost,estimate_weeks:r.estimate_weeks==null?null:+r.estimate_weeks})));
       setWorkstreamStatus(workstreamStatusRows);
       setProgressLogs(progressLogRows.map(r=>({...r,crew_size:r.crew_size==null?null:+r.crew_size,qty_done:+r.qty_done,cost_incurred:r.cost_incurred==null?null:+r.cost_incurred})));
     }catch(e){setLoadErr(e.message);}
