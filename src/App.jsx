@@ -7,6 +7,7 @@ import Login from "./Login.jsx";
 import SetPassword from "./SetPassword.jsx";
 import { CompanyProvider, useCompany } from "./CompanyContext.jsx";
 import { uploadPurchaseSlip, getSlipUrl } from "./slipUpload.js";
+import { availableMaintenanceStaff } from "./maintenanceStaffEngine.js";
 
 const fmtR  = n=>`R ${Number(n||0).toLocaleString("en-ZA",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 const fmtN  = n=>Number(n||0).toLocaleString("en-ZA",{maximumFractionDigits:3});
@@ -1085,7 +1086,7 @@ function buildForecast({ jobs, jobMaterials, templates, templateMaterials, items
 // ─── CALENDAR ────────────────────────────────────────────────────────────────
 function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destinations,
                     templates, setJobs, setJobMaterials, setIssues, setTemplates, isAdmin, companyId,
-                    projects, workstreamStatus }) {
+                    projects, workstreamStatus, progressLogs, workstreams }) {
   const [cursor, setCursor]     = useState(()=>{ const d=new Date(); return new Date(d.getFullYear(),d.getMonth(),1); });
   const [view, setView]         = useState("month");   // month | list
   const [openJob, setOpenJob]   = useState(null);
@@ -1119,13 +1120,17 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
 
   const jobsOn = dt => jobs.filter(j=>sameDay(parseDMY(j.due_date), dt));
 
-  // Project milestones (2026-08-19) — unioned in at render time from live
-  // data, never written as static maint_jobs/calendar rows, so they always
-  // reflect the current projected date rather than a stale snapshot. Two
-  // kinds: each project's own target_end_date, and each workstream's
-  // projected_finish_date from the always-live project_workstream_status
-  // view. Scoped to the current location, same as jobs above.
+  // Project activity (2026-08-19) — unioned in at render time from live
+  // data, never written as static maint_jobs/calendar rows, so it always
+  // reflects current reality rather than a stale snapshot. Three kinds:
+  // each project's own target_end_date, each workstream's live
+  // projected_finish_date (from project_workstream_status), and each
+  // logged week of progress (project_progress_logs) — so the calendar
+  // gives a full picture of farm activity, not just job cards. Scoped to
+  // the current location, same as jobs above.
   const parseISODate = d => d ? new Date(d+"T00:00:00") : null;
+  const wsById = useMemo(()=>{ const m={}; (workstreams||[]).forEach(w=>{m[w.id]=w;}); return m; },[workstreams]);
+  const projectLocIds = useMemo(()=>{ const m={}; (projects||[]).forEach(p=>{m[p.id]=p.location_id;}); return m; },[projects]);
   const milestones = useMemo(()=>{
     const list = [];
     (projects||[]).filter(p=>p.location_id===locId && p.target_end_date).forEach(p=>{
@@ -1134,8 +1139,14 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
     (workstreamStatus||[]).filter(s=>s.location_id===locId && s.projected_finish_date).forEach(s=>{
       list.push({ key:`ws-${s.id}`, date:s.projected_finish_date, label:`${s.name} — Projected Finish`, kind:"workstream" });
     });
+    (progressLogs||[]).forEach(l=>{
+      const ws = wsById[l.workstream_id];
+      if (!ws || projectLocIds[ws.project_id]!==locId) return;
+      const crewNote = l.crew_size!=null?`, crew ${l.crew_size}`:"";
+      list.push({ key:`log-${l.id}`, date:l.week_ending, label:`${ws.name}: ${fmtQty(l.qty_done, ws.unit)} logged${crewNote}`, kind:"progress" });
+    });
     return list;
-  },[projects, workstreamStatus, locId]);
+  },[projects, workstreamStatus, progressLogs, wsById, projectLocIds, locId]);
   const milestonesOn = dt => milestones.filter(m=>sameDay(parseISODate(m.date), dt));
 
   const statusOf = job => {
@@ -1223,8 +1234,10 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
               {dayJobs.length>3 && <div style={{fontSize:9,color:T.muted,paddingLeft:4}}>+{dayJobs.length-3} more</div>}
               {milestonesOn(dt).map(m=>(
                 <div key={m.key} className="cal-job" title={m.label}
-                  style={{borderLeft:`3px dashed ${T.gold}`,color:T.gold,fontStyle:"italic",cursor:"default"}}>
-                  &#9670; {m.label}
+                  style={m.kind==="progress"
+                    ?{borderLeft:`3px solid ${T.ok}`,color:T.ok,cursor:"default"}
+                    :{borderLeft:`3px dashed ${T.gold}`,color:T.gold,fontStyle:"italic",cursor:"default"}}>
+                  {m.kind==="progress"?"●":"◆"} {m.label}
                 </div>
               ))}
             </div>
@@ -1268,17 +1281,23 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
 
     {milestones.length>0 && (
       <div style={{marginTop:22}}>
-        <div className="section-title">Project Milestones <span style={{color:T.muted,fontWeight:400}}>({milestones.length})</span></div>
+        <div className="section-title">Project Activity <span style={{color:T.muted,fontWeight:400}}>({milestones.length})</span></div>
         <div className="tbl-wrap"><table className="tbl">
-          <thead><tr><th>Date</th><th>Milestone</th><th>Type</th></tr></thead>
+          <thead><tr><th>Date</th><th>Activity</th><th>Type</th></tr></thead>
           <tbody>
-            {[...milestones].sort((a,b)=>a.date.localeCompare(b.date)).map(m=>(
-              <tr key={m.key}>
-                <td className="mono" style={{fontSize:11,color:T.gold}}>{fmtDMY(parseISODate(m.date))}</td>
-                <td style={{fontStyle:"italic",color:T.gold}}>&#9670; {m.label}</td>
-                <td><span className="badge badge-neu">{m.kind==="project"?"Project Target":"Workstream Projection"}</span></td>
-              </tr>
-            ))}
+            {[...milestones].sort((a,b)=>b.date.localeCompare(a.date)).map(m=>{
+              const color = m.kind==="progress"?T.ok:T.gold;
+              const typeLabel = m.kind==="progress"?"Logged Progress":m.kind==="project"?"Project Target":"Workstream Projection";
+              return (
+                <tr key={m.key}>
+                  <td className="mono" style={{fontSize:11,color}}>{fmtDMY(parseISODate(m.date))}</td>
+                  <td style={{color, fontStyle:m.kind==="progress"?"normal":"italic"}}>
+                    {m.kind==="progress"?"●":"◆"} {m.label}
+                  </td>
+                  <td><span className="badge badge-neu">{typeLabel}</span></td>
+                </tr>
+              );
+            })}
           </tbody>
         </table></div>
       </div>
@@ -2347,7 +2366,8 @@ function statusBadgeLabel(s) {
 }
 
 function ProjectsPage({ locId, projects, workstreams, workstreamStatus, progressLogs,
-                         setProjects, setWorkstreams, setProgressLogs, refreshWorkstreamStatus, isAdmin, companyId }) {
+                         setProjects, setWorkstreams, setProgressLogs, refreshWorkstreamStatus,
+                         hrEmployees, hrScheduleLocations, hrLeave, isAdmin, companyId }) {
   const [locFilter, setLocFilter] = useState("all");
   const [openProjectId, setOpenProjectId] = useState(null);
   const [showNewProject, setShowNewProject] = useState(false);
@@ -2372,6 +2392,7 @@ function ProjectsPage({ locId, projects, workstreams, workstreamStatus, progress
         statusByWsId={statusByWsId} progressLogs={progressLogs}
         setWorkstreams={setWorkstreams} setProgressLogs={setProgressLogs}
         setProjects={setProjects} refreshWorkstreamStatus={refreshWorkstreamStatus}
+        hrEmployees={hrEmployees} hrScheduleLocations={hrScheduleLocations} hrLeave={hrLeave}
         isAdmin={isAdmin} companyId={companyId}
         onBack={()=>setOpenProjectId(null)}/>
     );
@@ -2500,7 +2521,8 @@ function NewProjectForm({ locId, companyId, setProjects, onClose }) {
   );
 }
 
-function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, setWorkstreams, setProgressLogs, setProjects, refreshWorkstreamStatus, isAdmin, companyId, onBack }) {
+function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, setWorkstreams, setProgressLogs, setProjects, refreshWorkstreamStatus,
+                          hrEmployees, hrScheduleLocations, hrLeave, isAdmin, companyId, onBack }) {
   const [logFor, setLogFor] = useState(null);
   const [editWs, setEditWs] = useState(null);
   const [showNewWs, setShowNewWs] = useState(false);
@@ -2598,7 +2620,8 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, setWo
       </tbody>
     </table></div>
 
-    <WorkstreamSuggestions project={project} workstreams={workstreams} statusByWsId={statusByWsId}/>
+    <WorkstreamSuggestions project={project} workstreams={workstreams} statusByWsId={statusByWsId}
+      hrEmployees={hrEmployees} hrScheduleLocations={hrScheduleLocations} hrLeave={hrLeave}/>
 
     {logFor && (
       <WeeklyLogForm workstream={logFor} companyId={companyId} setProgressLogs={setProgressLogs}
@@ -2634,18 +2657,32 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, setWo
 // Crew suggestions assume output scales roughly linearly with crew size,
 // inferred from the workstream's own logged history — a rough guide, not
 // a guarantee, and said as much in the copy below.
-function WorkstreamSuggestions({ project, workstreams, statusByWsId }) {
+function WorkstreamSuggestions({ project, workstreams, statusByWsId, hrEmployees, hrScheduleLocations, hrLeave }) {
   const rows = workstreams.map(w=>({ w, s: statusByWsId[w.id] })).filter(({s})=>s);
   if (rows.length===0) return null;
+
+  // How many Maintenance-department staff are actually on duty at this
+  // project's lodge today — cross-app read from HR/Linen, see
+  // maintenanceStaffEngine.js. Used to turn "you should add ~N crew" into
+  // "...but you've only got M on duty here today, so you're actually short."
+  const staffToday = useMemo(()=>
+    availableMaintenanceStaff({ employees:hrEmployees, scheduleLocations:hrScheduleLocations, leave:hrLeave, locationId:project.location_id, date:new Date() })
+  ,[hrEmployees, hrScheduleLocations, hrLeave, project.location_id]);
 
   return (
     <div style={{marginTop:22}}>
       <div className="section-title">AI Suggestions</div>
-      <div style={{fontSize:12,color:T.muted,marginBottom:12,lineHeight:1.6}}>
+      <div style={{fontSize:12,color:T.muted,marginBottom:8,lineHeight:1.6}}>
         Compares your own estimate against the tracked pace, and — when a workstream is running behind —
         suggests roughly how much crew to add to still hit {project.target_end_date||"the target date"}.
         Crew suggestions assume output scales roughly linearly with crew size, based on what you've logged
         so far — a rough guide, not a guarantee.
+      </div>
+      <div style={{fontSize:12,color:T.muted,marginBottom:12}}>
+        Maintenance staff on duty at {LOCATIONS.find(l=>l.id===project.location_id)?.name||project.location_id} today:{" "}
+        <span style={{color:T.cream,fontWeight:600}}>{staffToday.count}</span>
+        {staffToday.names.length>0 && <span> ({staffToday.names.join(", ")})</span>}
+        <span> — from HR/Linen's schedule, so make sure this week's lodge assignments are up to date there.</span>
       </div>
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
         {rows.map(({w,s})=>{
@@ -2674,12 +2711,19 @@ function WorkstreamSuggestions({ project, workstreams, statusByWsId }) {
                 <div style={{fontSize:12,color:T.muted}}>No progress logged yet — nothing to compare against.</div>
               ) : (<>
                 {estimateNote && <div style={{fontSize:12,color:T.muted,marginBottom:4}}>{estimateNote}</div>}
-                {s.status==="behind" && s.suggested_crew_size!=null && (
-                  <div style={{fontSize:12,color:T.danger}}>
-                    &#9888; At the current crew ({s.avg_crew_size!=null?`~${fmtN(s.avg_crew_size)}`:"—"}), this won't
-                    make {project.target_end_date||"the target date"}. Consider bumping crew to ~{s.suggested_crew_size} to catch up.
-                  </div>
-                )}
+                {s.status==="behind" && s.suggested_crew_size!=null && (() => {
+                  const short = s.suggested_crew_size > staffToday.count;
+                  return (
+                    <div style={{fontSize:12,color:T.danger}}>
+                      &#9888; At the current crew ({s.avg_crew_size!=null?`~${fmtN(s.avg_crew_size)}`:"—"}), this won't
+                      make {project.target_end_date||"the target date"}. Consider bumping crew to ~{s.suggested_crew_size} to catch up.
+                      {short && (
+                        <> You've only got {staffToday.count} maintenance staff on duty here today — {s.suggested_crew_size-staffToday.count} short.
+                        Consider pulling crew from another workstream/lodge, or bringing in temp help.</>
+                      )}
+                    </div>
+                  );
+                })()}
                 {s.status==="behind" && s.suggested_crew_size==null && (
                   <div style={{fontSize:12,color:T.danger}}>&#9888; Running behind pace for the target date.</div>
                 )}
@@ -3063,6 +3107,13 @@ function AuthenticatedApp() {
   const [workstreams,      setWorkstreams]      = useState([]);
   const [workstreamStatus, setWorkstreamStatus] = useState([]);
   const [progressLogs,     setProgressLogs]     = useState([]);
+  // Cross-app read (2026-08-19) — HR/Linen's staff/schedule/leave tables,
+  // same shared Supabase project, used only by the Projects AI Suggestions
+  // panel to gauge maintenance-staff availability per lodge. See
+  // maintenanceStaffEngine.js for the on/off-cycle math.
+  const [hrEmployees,        setHrEmployees]        = useState([]);
+  const [hrScheduleLocations,setHrScheduleLocations]= useState([]);
+  const [hrLeave,            setHrLeave]            = useState([]);
   // Purchase slip photos (2026-08-12) — keyed by purchase_slips.id, loaded
   // company-wide (not per-location) since it's just a lookup for the "View
   // slip" link and the manual Attach flow, not something rendered as a list
@@ -3081,7 +3132,8 @@ function AuthenticatedApp() {
     try{
       const cf = `company_id=eq.${companyId}`;
       const[itemRows,purchRows,issueRows,countRows,destRows,jobRows,tplRows,jobMatRows,tplMatRows,slipRows,
-            projectRows,workstreamRows,workstreamStatusRows,progressLogRows]=await Promise.all([
+            projectRows,workstreamRows,workstreamStatusRows,progressLogRows,
+            hrEmployeeRows,hrScheduleLocationRows,hrLeaveRows]=await Promise.all([
         sb.select("maint_items", `active=eq.true&${cf}&order=sort_order.asc`),
         sb.select("maint_purchases", cf),
         sb.select("maint_issues", cf),
@@ -3096,6 +3148,9 @@ function AuthenticatedApp() {
         sb.select("project_workstreams", cf),
         sb.select("project_workstream_status", cf),
         sb.select("project_progress_logs", cf),
+        sb.select("hr_employees", `active=eq.true&${cf}`),
+        sb.select("hr_schedule_locations", cf),
+        sb.select("hr_leave", cf),
       ]);
       const slipMap={}; (slipRows||[]).forEach(s=>{slipMap[s.id]=s;});
       setSlips(slipMap);
@@ -3118,6 +3173,9 @@ function AuthenticatedApp() {
       setWorkstreams(workstreamRows.map(r=>({...r,target_qty:+r.target_qty,baseline_qty:+r.baseline_qty,budget_cost:r.budget_cost==null?null:+r.budget_cost,estimate_weeks:r.estimate_weeks==null?null:+r.estimate_weeks})));
       setWorkstreamStatus(workstreamStatusRows);
       setProgressLogs(progressLogRows.map(r=>({...r,crew_size:r.crew_size==null?null:+r.crew_size,qty_done:+r.qty_done,cost_incurred:r.cost_incurred==null?null:+r.cost_incurred})));
+      setHrEmployees(hrEmployeeRows);
+      setHrScheduleLocations(hrScheduleLocationRows);
+      setHrLeave(hrLeaveRows);
     }catch(e){setLoadErr(e.message);}
     finally{setLoading(false);}
   },[companyId]);
@@ -3341,11 +3399,13 @@ function AuthenticatedApp() {
                                        purchases={purchases} issues={issues} destinations={destinations}
                                        templates={templates} setJobs={setJobs} setJobMaterials={setJobMaterials}
                                        setIssues={setIssues} setTemplates={setTemplates} isAdmin={isAdmin} companyId={companyId}
-                                       projects={projects} workstreamStatus={workstreamStatus}/>}
+                                       projects={projects} workstreamStatus={workstreamStatus} progressLogs={progressLogs}
+                                       workstreams={workstreams}/>}
           {page==="projects"     && <ProjectsPage locId={locId} projects={projects} workstreams={workstreams}
                                        workstreamStatus={workstreamStatus} progressLogs={progressLogs}
                                        setProjects={setProjects} setWorkstreams={setWorkstreams} setProgressLogs={setProgressLogs}
                                        refreshWorkstreamStatus={refreshWorkstreamStatus}
+                                       hrEmployees={hrEmployees} hrScheduleLocations={hrScheduleLocations} hrLeave={hrLeave}
                                        isAdmin={isAdmin} companyId={companyId}/>}
           {page==="templates"    && isAdmin && <JobTemplates locId={locId} templates={templates} setTemplates={setTemplates}
                                        templateMaterials={templateMaterials} setTemplateMaterials={setTemplateMaterials}
