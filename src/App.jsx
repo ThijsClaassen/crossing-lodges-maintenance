@@ -647,13 +647,25 @@ function Issues({ locId, items, issues, setIssues, destinations, purchases, jobs
   const blank={item_id:"",date:today(),qty:"",destination_id:"",notes:""};
   const [form,setForm]=useState(blank);
   const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
+
+  // Category-then-item picker (2026-08-17) — same two-step pattern as
+  // MaterialPicker (used on job cards/templates) so choosing what's being
+  // issued works the same way everywhere in the app instead of scrolling one
+  // long flat item list here.
+  const [category,setCategory]=useState("");
+  const categories = useMemo(()=>[...new Set(items.map(it=>it.category).filter(Boolean))].sort(),[items]);
+  const uncategorisedCount = items.filter(it=>!it.category).length;
+  const itemsInCat = category
+    ? items.filter(it => category==="__none__" ? !it.category : it.category===category)
+    : [];
+
   const save=async()=>{
     if(!form.item_id||!form.qty)return;
     const dest=locDests.find(d=>d.id===form.destination_id);
     const row={id:uid(),location_id:locId,item_id:form.item_id,date:form.date,
       qty:parseFloat(form.qty)||0,destination_id:form.destination_id||null,
       dest_name:dest?.name||null,notes:form.notes||null,company_id:companyId};
-    try{await sb.insert("maint_issues",row);setIssues(p=>[...p,row]);setForm({...blank,date:today()});setShowForm(false);}
+    try{await sb.insert("maint_issues",row);setIssues(p=>[...p,row]);setForm({...blank,date:today()});setCategory("");setShowForm(false);}
     catch(e){alert("Save failed: "+e.message);}
   };
   const remove=async id=>{
@@ -667,7 +679,7 @@ function Issues({ locId, items, issues, setIssues, destinations, purchases, jobs
       <div className="strip-item"><div className="strip-label">Total Units Issued</div><div className="strip-val">{fmtN(totalIssued)}</div></div>
       <div className="strip-item"><div className="strip-label">Issue Entries</div><div className="strip-val">{issues.length}</div></div>
       <div style={{marginLeft:"auto"}}>
-        <button className="btn btn-primary" onClick={()=>{setForm({...blank,date:today(),destination_id:locDests[0]?.id||""});setShowForm(true);}}>+ Log Issue</button>
+        <button className="btn btn-primary" onClick={()=>{setForm({...blank,date:today(),destination_id:locDests[0]?.id||""});setCategory("");setShowForm(true);}}>+ Log Issue</button>
       </div>
     </div>
     <div className="tbl-wrap"><table className="tbl">
@@ -697,10 +709,17 @@ function Issues({ locId, items, issues, setIssues, destinations, purchases, jobs
       <div className="overlay" onClick={e=>e.target===e.currentTarget&&setShowForm(false)}>
         <div className="modal">
           <div className="modal-title">Log <span>Issue</span></div>
+          <div className="field"><label>Category</label>
+            <select value={category} onChange={e=>{setCategory(e.target.value);setForm(p=>({...p,item_id:""}));}}>
+              <option value="">-- Select category --</option>
+              {categories.map(c=><option key={c} value={c}>{c}</option>)}
+              {uncategorisedCount>0 && <option value="__none__">Uncategorised</option>}
+            </select>
+          </div>
           <div className="field"><label>Item</label>
-            <select value={form.item_id} onChange={f("item_id")}>
-              <option value="">-- Select item --</option>
-              {items.map(i=><option key={i.id} value={i.id}>{i.description} ({i.unit})</option>)}
+            <select value={form.item_id} onChange={f("item_id")} disabled={!category}>
+              <option value="">{category ? "-- Select item --" : "Pick a category first"}</option>
+              {itemsInCat.map(i=><option key={i.id} value={i.id}>{i.description} ({i.unit})</option>)}
             </select>
           </div>
           <div className="grid2">
@@ -1065,7 +1084,8 @@ function buildForecast({ jobs, jobMaterials, templates, templateMaterials, items
 
 // ─── CALENDAR ────────────────────────────────────────────────────────────────
 function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destinations,
-                    templates, setJobs, setJobMaterials, setIssues, setTemplates, isAdmin, companyId }) {
+                    templates, setJobs, setJobMaterials, setIssues, setTemplates, isAdmin, companyId,
+                    projects, workstreamStatus }) {
   const [cursor, setCursor]     = useState(()=>{ const d=new Date(); return new Date(d.getFullYear(),d.getMonth(),1); });
   const [view, setView]         = useState("month");   // month | list
   const [openJob, setOpenJob]   = useState(null);
@@ -1098,6 +1118,25 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
   },[cursor]);
 
   const jobsOn = dt => jobs.filter(j=>sameDay(parseDMY(j.due_date), dt));
+
+  // Project milestones (2026-08-19) — unioned in at render time from live
+  // data, never written as static maint_jobs/calendar rows, so they always
+  // reflect the current projected date rather than a stale snapshot. Two
+  // kinds: each project's own target_end_date, and each workstream's
+  // projected_finish_date from the always-live project_workstream_status
+  // view. Scoped to the current location, same as jobs above.
+  const parseISODate = d => d ? new Date(d+"T00:00:00") : null;
+  const milestones = useMemo(()=>{
+    const list = [];
+    (projects||[]).filter(p=>p.location_id===locId && p.target_end_date).forEach(p=>{
+      list.push({ key:`proj-${p.id}`, date:p.target_end_date, label:`${p.name} — Target Finish`, kind:"project" });
+    });
+    (workstreamStatus||[]).filter(s=>s.location_id===locId && s.projected_finish_date).forEach(s=>{
+      list.push({ key:`ws-${s.id}`, date:s.projected_finish_date, label:`${s.name} — Projected Finish`, kind:"workstream" });
+    });
+    return list;
+  },[projects, workstreamStatus, locId]);
+  const milestonesOn = dt => milestones.filter(m=>sameDay(parseISODate(m.date), dt));
 
   const statusOf = job => {
     if(job.status==="completed") return "completed";
@@ -1182,6 +1221,12 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
                 );
               })}
               {dayJobs.length>3 && <div style={{fontSize:9,color:T.muted,paddingLeft:4}}>+{dayJobs.length-3} more</div>}
+              {milestonesOn(dt).map(m=>(
+                <div key={m.key} className="cal-job" title={m.label}
+                  style={{borderLeft:`3px dashed ${T.gold}`,color:T.gold,fontStyle:"italic",cursor:"default"}}>
+                  &#9670; {m.label}
+                </div>
+              ))}
             </div>
           );
         })}
@@ -1219,6 +1264,24 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
           {upcoming.length===0&&<tr><td colSpan={7} className="empty">No jobs scheduled yet</td></tr>}
         </tbody>
       </table></div>
+    )}
+
+    {milestones.length>0 && (
+      <div style={{marginTop:22}}>
+        <div className="section-title">Project Milestones <span style={{color:T.muted,fontWeight:400}}>({milestones.length})</span></div>
+        <div className="tbl-wrap"><table className="tbl">
+          <thead><tr><th>Date</th><th>Milestone</th><th>Type</th></tr></thead>
+          <tbody>
+            {[...milestones].sort((a,b)=>a.date.localeCompare(b.date)).map(m=>(
+              <tr key={m.key}>
+                <td className="mono" style={{fontSize:11,color:T.gold}}>{fmtDMY(parseISODate(m.date))}</td>
+                <td style={{fontStyle:"italic",color:T.gold}}>&#9670; {m.label}</td>
+                <td><span className="badge badge-neu">{m.kind==="project"?"Project Target":"Workstream Projection"}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table></div>
+      </div>
     )}
 
     {openJob && (
@@ -2252,10 +2315,471 @@ function DestinationCosts({ destinations, issues, items, purchases, jobs }) {
   </>);
 }
 
+// ─── PROJECTS ────────────────────────────────────────────────────────────────
+// Multi-week development projects (trail building, water pipe, building
+// finishes, etc.) — tracked via projects / project_workstreams /
+// project_progress_logs, with progress/rate/finish-date math computed live
+// by the project_workstream_status view (never stored, see
+// add_maintenance_projects.sql — always re-derived from the logs at read
+// time). Loaded company-wide like jobMaterials/templateMaterials, not
+// scoped to the global location switcher — a project is naturally
+// something you'd check across lodges, so it gets its own location filter
+// (defaults to All) instead.
+
+const PROJECT_STATUS_LABEL = { planning:"Planning", active:"Active", complete:"Complete" };
+const WORKSTREAM_UNIT_LABEL = { km:"km", m:"m", percent:"%" };
+
+function daysUntil(iso) {
+  if (!iso) return null;
+  const d = new Date(iso + "T00:00:00");
+  const t = new Date(); t.setHours(0,0,0,0);
+  return Math.round((d - t) / 86400000);
+}
+function fmtQty(n, unit) {
+  const v = Number(n || 0);
+  return unit === "percent" ? `${Math.round(v*100)}%` : `${fmtN(v)} ${WORKSTREAM_UNIT_LABEL[unit]||""}`;
+}
+function statusBadgeColor(s) {
+  return s === "on_track" ? T.ok : s === "behind" ? T.danger : s === "complete" ? T.gold : T.muted;
+}
+function statusBadgeLabel(s) {
+  return s === "on_track" ? "On Track" : s === "behind" ? "Behind" : s === "complete" ? "Complete" : "No Data Yet";
+}
+
+function ProjectsPage({ locId, projects, workstreams, workstreamStatus, progressLogs,
+                         setProjects, setWorkstreams, setProgressLogs, isAdmin, companyId }) {
+  const [locFilter, setLocFilter] = useState("all");
+  const [openProjectId, setOpenProjectId] = useState(null);
+  const [showNewProject, setShowNewProject] = useState(false);
+
+  const visibleProjects = useMemo(()=>
+    locFilter==="all" ? projects : projects.filter(p=>p.location_id===locFilter)
+  ,[projects, locFilter]);
+
+  const statusByWsId = useMemo(()=>{
+    const m={}; workstreamStatus.forEach(s=>{m[s.id]=s;}); return m;
+  },[workstreamStatus]);
+
+  const wsByProject = useMemo(()=>{
+    const m={}; workstreams.forEach(w=>{(m[w.project_id]||(m[w.project_id]=[])).push(w);}); return m;
+  },[workstreams]);
+
+  const openProject = openProjectId ? projects.find(p=>p.id===openProjectId) : null;
+
+  if (openProject) {
+    return (
+      <ProjectDetail project={openProject} workstreams={wsByProject[openProject.id]||[]}
+        statusByWsId={statusByWsId} progressLogs={progressLogs}
+        setWorkstreams={setWorkstreams} setProgressLogs={setProgressLogs}
+        setProjects={setProjects}
+        isAdmin={isAdmin} companyId={companyId}
+        onBack={()=>setOpenProjectId(null)}/>
+    );
+  }
+
+  return (<>
+    <div className="strip">
+      <div className="strip-item"><div className="strip-label">Projects</div><div className="strip-val">{visibleProjects.length}</div></div>
+      <div className="strip-item"><div className="strip-label">Active</div>
+        <div className="strip-val">{visibleProjects.filter(p=>p.status==="active").length}</div></div>
+      <div style={{marginLeft:"auto",display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+        <select value={locFilter} onChange={e=>setLocFilter(e.target.value)}
+          style={{background:"rgba(0,0,0,.25)",border:`1px solid ${T.border}`,borderRadius:6,
+            padding:"9px 11px",color:T.cream,fontFamily:"'Inter',sans-serif",fontSize:13,outline:"none"}}>
+          <option value="all">All Locations</option>
+          {LOCATIONS.map(l=><option key={l.id} value={l.id}>{l.name}</option>)}
+        </select>
+        {isAdmin && <button className="btn btn-primary" onClick={()=>setShowNewProject(true)}>+ New Project</button>}
+      </div>
+    </div>
+
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:14}}>
+      {visibleProjects.map(p=>{
+        const ws = wsByProject[p.id]||[];
+        // Aggregate progress = average of each workstream's own % of
+        // target, not a sum across differing units (km/m/%).
+        const fractions = ws.map(w=>{
+          const s = statusByWsId[w.id];
+          const target = Number(w.target_qty||0);
+          if (target<=0) return 1;
+          const done = s ? Number(s.cumulative_done||0) : Number(w.baseline_qty||0);
+          return Math.max(0, Math.min(1, done/target));
+        });
+        const pct = fractions.length ? Math.round((fractions.reduce((a,b)=>a+b,0)/fractions.length)*100) : 0;
+        const statuses = ws.map(w=>statusByWsId[w.id]?.status).filter(Boolean);
+        const rollup = statuses.includes("behind") ? "behind"
+          : statuses.includes("on_track") ? "on_track"
+          : statuses.length && statuses.every(s=>s==="complete") ? "complete" : "no_data";
+        const days = daysUntil(p.target_end_date);
+        const loc = LOCATIONS.find(l=>l.id===p.location_id);
+        return (
+          <div key={p.id} onClick={()=>setOpenProjectId(p.id)}
+            style={{background:"rgba(0,0,0,.2)",border:`1px solid ${T.border}`,borderRadius:10,padding:16,cursor:"pointer"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
+              <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:18,fontWeight:600,color:T.cream}}>{p.name}</div>
+              {loc && <span className="badge badge-neu" style={{flexShrink:0,marginLeft:8}}>{loc.id}</span>}
+            </div>
+            <div style={{fontSize:11,color:T.muted,marginBottom:10}}>
+              {PROJECT_STATUS_LABEL[p.status]||p.status} · {ws.length} workstream{ws.length===1?"":"s"}
+            </div>
+            <div style={{height:7,background:"rgba(0,0,0,.3)",borderRadius:4,overflow:"hidden",marginBottom:8}}>
+              <div style={{height:"100%",width:`${pct}%`,background:T.gold,borderRadius:4}}/>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span className="badge" style={{background:`${statusBadgeColor(rollup)}22`,color:statusBadgeColor(rollup),border:`1px solid ${statusBadgeColor(rollup)}55`}}>
+                {statusBadgeLabel(rollup)}
+              </span>
+              <span style={{fontSize:11,color:T.muted}}>
+                {days==null ? "No target date" : days<0 ? `${-days}d overdue` : `${days}d to target`}
+              </span>
+            </div>
+          </div>
+        );
+      })}
+      {visibleProjects.length===0 && <div className="empty">No projects yet.</div>}
+    </div>
+
+    {showNewProject && (
+      <NewProjectForm locId={locId} companyId={companyId} setProjects={setProjects}
+        onClose={()=>setShowNewProject(false)}/>
+    )}
+  </>);
+}
+
+function NewProjectForm({ locId, companyId, setProjects, onClose }) {
+  const isoToday = new Date().toISOString().slice(0,10);
+  const [form, setForm] = useState({name:"",description:"",location_id:locId,start_date:isoToday,target_end_date:"",status:"planning"});
+  const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    if (!form.name.trim()) return;
+    setSaving(true);
+    try {
+      const row = {
+        id: uid(), company_id: companyId, location_id: form.location_id, name: form.name.trim(),
+        description: form.description.trim()||null,
+        start_date: form.start_date||null, target_end_date: form.target_end_date||null,
+        status: form.status,
+      };
+      const ins = await sb.insert("projects", row);
+      setProjects(p=>[...p, ins]);
+      onClose();
+    } catch(e) { alert("Save failed: "+e.message); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal">
+        <div className="modal-title">New <span>Project</span></div>
+        <div className="field"><label>Name</label><input type="text" value={form.name} onChange={f("name")}/></div>
+        <div className="field"><label>Description</label><input type="text" value={form.description} onChange={f("description")}/></div>
+        <div className="grid2">
+          <div className="field"><label>Location</label>
+            <select value={form.location_id} onChange={f("location_id")}>
+              {LOCATIONS.map(l=><option key={l.id} value={l.id}>{l.name}</option>)}
+            </select>
+          </div>
+          <div className="field"><label>Status</label>
+            <select value={form.status} onChange={f("status")}>
+              {Object.entries(PROJECT_STATUS_LABEL).map(([k,v])=><option key={k} value={k}>{v}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="grid2">
+          <div className="field"><label>Start Date</label><input type="date" value={form.start_date} onChange={f("start_date")}/></div>
+          <div className="field"><label>Target End Date</label><input type="date" value={form.target_end_date} onChange={f("target_end_date")}/></div>
+        </div>
+        <div style={{display:"flex",gap:9}}>
+          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving?"Saving...":"Create Project"}</button>
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, setWorkstreams, setProgressLogs, setProjects, isAdmin, companyId, onBack }) {
+  const [logFor, setLogFor] = useState(null);
+  const [editWs, setEditWs] = useState(null);
+  const [showNewWs, setShowNewWs] = useState(false);
+
+  const latestCrewFor = wsId => {
+    const logs = progressLogs.filter(l=>l.workstream_id===wsId);
+    if (!logs.length) return null;
+    const latest = logs.reduce((a,b)=> (a.week_ending>b.week_ending?a:b));
+    return latest.crew_size;
+  };
+
+  const days = daysUntil(project.target_end_date);
+
+  const changeProjectStatus = async (status) => {
+    try {
+      await sb.update("projects", project.id, {status});
+      setProjects(p=>p.map(x=>x.id===project.id?{...x,status}:x));
+    } catch(e){ alert("Error: "+e.message); }
+  };
+
+  const deleteProject = async () => {
+    if (!window.confirm(`Delete "${project.name}" and all its workstreams/logs?`)) return;
+    try {
+      await sb.delete("projects", project.id);
+      setProjects(p=>p.filter(x=>x.id!==project.id));
+      onBack();
+    } catch(e){ alert("Error: "+e.message); }
+  };
+
+  return (<>
+    <button className="btn btn-ghost btn-sm" onClick={onBack} style={{marginBottom:12}}>&#8592; All Projects</button>
+
+    <div className="strip">
+      <div className="strip-item"><div className="strip-label">Status</div>
+        <div className="strip-val" style={{fontSize:16}}>
+          {isAdmin ? (
+            <select value={project.status} onChange={e=>changeProjectStatus(e.target.value)}
+              style={{background:"rgba(0,0,0,.25)",border:`1px solid ${T.border}`,borderRadius:6,
+                padding:"6px 8px",color:T.cream,fontSize:13}}>
+              {Object.entries(PROJECT_STATUS_LABEL).map(([k,v])=><option key={k} value={k}>{v}</option>)}
+            </select>
+          ) : (PROJECT_STATUS_LABEL[project.status]||project.status)}
+        </div>
+      </div>
+      <div className="strip-item"><div className="strip-label">Target End</div>
+        <div className="strip-val" style={{fontSize:16}}>{project.target_end_date||"—"}</div></div>
+      <div className="strip-item"><div className="strip-label">Days Left</div>
+        <div className="strip-val" style={{fontSize:16,color:days<0?T.danger:T.cream}}>{days==null?"—":days}</div></div>
+      {isAdmin && <div style={{marginLeft:"auto",display:"flex",gap:8}}>
+        <button className="btn btn-ghost" onClick={()=>setShowNewWs(true)}>+ Add Workstream</button>
+        <button className="btn btn-danger" onClick={deleteProject}>Delete Project</button>
+      </div>}
+    </div>
+
+    {project.description && <div style={{fontSize:13,color:T.muted,marginBottom:16,lineHeight:1.6}}>{project.description}</div>}
+
+    <div className="tbl-wrap"><table className="tbl">
+      <thead><tr>
+        <th>Workstream</th><th className="num">Target</th><th className="num">Done</th><th className="num">Remaining</th>
+        <th className="num">Crew</th><th className="num">Actual Rate</th><th className="num">Rate Needed</th>
+        <th>Status</th><th>Projected Finish</th><th className="num">Budget vs Actual</th><th></th>
+      </tr></thead>
+      <tbody>
+        {workstreams.map(w=>{
+          const s = statusByWsId[w.id];
+          const crew = latestCrewFor(w.id);
+          return (
+            <tr key={w.id}>
+              <td style={{fontWeight:600}}>{w.name}</td>
+              <td className="num">{fmtQty(w.target_qty, w.unit)}</td>
+              <td className="num">{fmtQty(s?.cumulative_done ?? w.baseline_qty, w.unit)}</td>
+              <td className="num">{fmtQty(s?.remaining ?? (w.target_qty-w.baseline_qty), w.unit)}</td>
+              <td className="num" style={{color:T.muted}}>{crew==null?"—":crew}</td>
+              <td className="num" style={{color:T.muted}}>{s?.actual_rate_per_week!=null?`${fmtN(s.actual_rate_per_week)} /wk`:"—"}</td>
+              <td className="num" style={{color:T.muted}}>{s?.rate_needed_per_week!=null?`${fmtN(s.rate_needed_per_week)} /wk`:"—"}</td>
+              <td>
+                <span className="badge" style={{background:`${statusBadgeColor(s?.status)}22`,color:statusBadgeColor(s?.status),border:`1px solid ${statusBadgeColor(s?.status)}55`}}>
+                  {statusBadgeLabel(s?.status)}
+                </span>
+              </td>
+              <td style={{fontSize:12,color:T.muted}}>{s?.projected_finish_date||"—"}</td>
+              <td className="num" style={{color: s?.budget_variance==null?T.muted: s.budget_variance<0?T.danger:T.ok}}>
+                {w.budget_cost==null?"No budget set": s?.budget_variance==null?"—":fmtR(s.budget_variance)}
+              </td>
+              <td style={{display:"flex",gap:5}}>
+                <button className="btn btn-primary btn-sm" onClick={()=>setLogFor(w)}>+ Log</button>
+                {isAdmin && <button className="btn btn-ghost btn-sm" onClick={()=>setEditWs(w)}>Edit</button>}
+              </td>
+            </tr>
+          );
+        })}
+        {workstreams.length===0 && <tr><td colSpan={11} className="empty">No workstreams yet.</td></tr>}
+      </tbody>
+    </table></div>
+
+    {logFor && (
+      <WeeklyLogForm workstream={logFor} companyId={companyId} setProgressLogs={setProgressLogs}
+        onClose={()=>setLogFor(null)}/>
+    )}
+    {editWs && (
+      <EditWorkstreamForm workstream={editWs} setWorkstreams={setWorkstreams}
+        onClose={()=>setEditWs(null)}/>
+    )}
+    {showNewWs && (
+      <NewWorkstreamForm project={project} companyId={companyId} setWorkstreams={setWorkstreams}
+        onClose={()=>setShowNewWs(false)}/>
+    )}
+  </>);
+}
+
+function WeeklyLogForm({ workstream, companyId, setProgressLogs, onClose }) {
+  const isoToday = new Date().toISOString().slice(0,10);
+  const [form, setForm] = useState({week_ending:isoToday, crew_size:"", qty_done:"", cost_incurred:"", notes:""});
+  const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    if (!form.week_ending || form.qty_done==="") { alert("Week ending and qty done are required."); return; }
+    setSaving(true);
+    try {
+      const row = {
+        id: uid(), company_id: companyId, workstream_id: workstream.id, week_ending: form.week_ending,
+        crew_size: form.crew_size===""?null:parseInt(form.crew_size,10),
+        qty_done: parseFloat(form.qty_done)||0,
+        cost_incurred: form.cost_incurred===""?null:parseFloat(form.cost_incurred),
+        notes: form.notes.trim()||null,
+      };
+      const ins = await sb.insert("project_progress_logs", row);
+      setProgressLogs(p=>[...p, ins]);
+      onClose();
+    } catch(e) { alert("Save failed: "+e.message); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal">
+        <div className="modal-title">Weekly Log <span>{workstream.name}</span></div>
+        <div className="grid2">
+          <div className="field"><label>Week Ending</label><input type="date" value={form.week_ending} onChange={f("week_ending")}/></div>
+          <div className="field"><label>Crew Size</label><input type="number" value={form.crew_size} onChange={f("crew_size")}/></div>
+        </div>
+        <div className="grid2">
+          <div className="field"><label>Qty Done This Week ({WORKSTREAM_UNIT_LABEL[workstream.unit]})</label>
+            <input type="number" step="0.01" value={form.qty_done} onChange={f("qty_done")}/></div>
+          <div className="field"><label>Cost Incurred (R)</label><input type="number" step="0.01" value={form.cost_incurred} onChange={f("cost_incurred")}/></div>
+        </div>
+        <div className="field"><label>Notes</label><input type="text" value={form.notes} onChange={f("notes")}/></div>
+        <div style={{display:"flex",gap:9}}>
+          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving?"Saving...":"Save Log"}</button>
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EditWorkstreamForm({ workstream, setWorkstreams, onClose }) {
+  const [form, setForm] = useState({...workstream, target_qty:String(workstream.target_qty), baseline_qty:String(workstream.baseline_qty), budget_cost: workstream.budget_cost==null?"":String(workstream.budget_cost)});
+  const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const patch = {
+        name: form.name.trim(), unit: form.unit,
+        target_qty: parseFloat(form.target_qty)||0, baseline_qty: parseFloat(form.baseline_qty)||0,
+        baseline_date: form.baseline_date||null,
+        budget_cost: form.budget_cost===""?null:parseFloat(form.budget_cost),
+        status: form.status,
+      };
+      await sb.update("project_workstreams", workstream.id, patch);
+      setWorkstreams(p=>p.map(w=>w.id===workstream.id?{...w,...patch}:w));
+      onClose();
+    } catch(e) { alert("Save failed: "+e.message); }
+    finally { setSaving(false); }
+  };
+
+  const remove = async () => {
+    if (!window.confirm(`Delete workstream "${workstream.name}" and all its logs?`)) return;
+    try {
+      await sb.delete("project_workstreams", workstream.id);
+      setWorkstreams(p=>p.filter(w=>w.id!==workstream.id));
+      onClose();
+    } catch(e) { alert("Error: "+e.message); }
+  };
+
+  return (
+    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal">
+        <div className="modal-title">Edit <span>Workstream</span></div>
+        <div className="field"><label>Name</label><input type="text" value={form.name} onChange={f("name")}/></div>
+        <div className="grid2">
+          <div className="field"><label>Unit</label>
+            <select value={form.unit} onChange={f("unit")}>
+              {["km","m","percent"].map(u=><option key={u} value={u}>{WORKSTREAM_UNIT_LABEL[u]}</option>)}
+            </select>
+          </div>
+          <div className="field"><label>Status</label>
+            <select value={form.status} onChange={f("status")}>
+              {["not_started","on_track","behind","complete"].map(s=><option key={s} value={s}>{s.replace("_"," ")}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="grid2">
+          <div className="field"><label>Target Qty</label><input type="number" step="0.01" value={form.target_qty} onChange={f("target_qty")}/></div>
+          <div className="field"><label>Baseline Qty</label><input type="number" step="0.01" value={form.baseline_qty} onChange={f("baseline_qty")}/></div>
+        </div>
+        <div className="grid2">
+          <div className="field"><label>Baseline Date</label><input type="date" value={form.baseline_date||""} onChange={f("baseline_date")}/></div>
+          <div className="field"><label>Budget Cost (R, optional)</label><input type="number" step="0.01" value={form.budget_cost} onChange={f("budget_cost")}/></div>
+        </div>
+        <div style={{display:"flex",gap:9}}>
+          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving?"Saving...":"Save Changes"}</button>
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-danger" onClick={remove} style={{marginLeft:"auto"}}>Delete</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NewWorkstreamForm({ project, companyId, setWorkstreams, onClose }) {
+  const isoToday = new Date().toISOString().slice(0,10);
+  const [form, setForm] = useState({name:"",unit:"km",target_qty:"",baseline_qty:"0",baseline_date:isoToday,budget_cost:""});
+  const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    if (!form.name.trim()) return;
+    setSaving(true);
+    try {
+      const row = {
+        id: uid(), company_id: companyId, project_id: project.id, name: form.name.trim(), unit: form.unit,
+        target_qty: parseFloat(form.target_qty)||0, baseline_qty: parseFloat(form.baseline_qty)||0,
+        baseline_date: form.baseline_date||null,
+        budget_cost: form.budget_cost===""?null:parseFloat(form.budget_cost),
+        status: "not_started",
+      };
+      const ins = await sb.insert("project_workstreams", row);
+      setWorkstreams(p=>[...p, ins]);
+      onClose();
+    } catch(e) { alert("Save failed: "+e.message); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal">
+        <div className="modal-title">Add <span>Workstream</span></div>
+        <div className="field"><label>Name</label><input type="text" value={form.name} onChange={f("name")}/></div>
+        <div className="grid2">
+          <div className="field"><label>Unit</label>
+            <select value={form.unit} onChange={f("unit")}>
+              {["km","m","percent"].map(u=><option key={u} value={u}>{WORKSTREAM_UNIT_LABEL[u]}</option>)}
+            </select>
+          </div>
+          <div className="field"><label>Target Qty</label><input type="number" step="0.01" value={form.target_qty} onChange={f("target_qty")}/></div>
+        </div>
+        <div className="grid2">
+          <div className="field"><label>Baseline Qty</label><input type="number" step="0.01" value={form.baseline_qty} onChange={f("baseline_qty")}/></div>
+          <div className="field"><label>Baseline Date</label><input type="date" value={form.baseline_date} onChange={f("baseline_date")}/></div>
+        </div>
+        <div className="field"><label>Budget Cost (R, optional)</label><input type="number" step="0.01" value={form.budget_cost} onChange={f("budget_cost")}/></div>
+        <div style={{display:"flex",gap:9}}>
+          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving?"Saving...":"Add Workstream"}</button>
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── PAGES ───────────────────────────────────────────────────────────────────
 const PAGES=[
   {id:"dashboard",   label:"Dashboard",    section:"Overview",   adminOnly:false},
   {id:"calendar",    label:"Calendar",     section:"Schedule",   adminOnly:false},
+  {id:"projects",    label:"Projects",     section:"Schedule",   adminOnly:false},
   {id:"templates",   label:"Job Templates",section:"Schedule",   adminOnly:true},
   {id:"purchases",   label:"Purchases",    section:"Stock",      adminOnly:false},
   {id:"issues",      label:"Issues",       section:"Stock",      adminOnly:false},
@@ -2328,6 +2852,13 @@ function AuthenticatedApp() {
   const [allData,       setAllData]      = useState({items:{},purchases:{},issues:{},counts:{},destinations:{},jobs:{},templates:{}});
   const [jobMaterials,     setJobMaterials]     = useState([]);
   const [templateMaterials,setTemplateMaterials]= useState([]);
+  // Projects (2026-08-19) — company-wide, not per-location like allData,
+  // same reasoning as jobMaterials/templateMaterials above: these are
+  // joined by project_id/workstream_id, not location_id.
+  const [projects,         setProjects]         = useState([]);
+  const [workstreams,      setWorkstreams]      = useState([]);
+  const [workstreamStatus, setWorkstreamStatus] = useState([]);
+  const [progressLogs,     setProgressLogs]     = useState([]);
   // Purchase slip photos (2026-08-12) — keyed by purchase_slips.id, loaded
   // company-wide (not per-location) since it's just a lookup for the "View
   // slip" link and the manual Attach flow, not something rendered as a list
@@ -2345,7 +2876,8 @@ function AuthenticatedApp() {
     setLoading(true);setLoadErr(null);
     try{
       const cf = `company_id=eq.${companyId}`;
-      const[itemRows,purchRows,issueRows,countRows,destRows,jobRows,tplRows,jobMatRows,tplMatRows,slipRows]=await Promise.all([
+      const[itemRows,purchRows,issueRows,countRows,destRows,jobRows,tplRows,jobMatRows,tplMatRows,slipRows,
+            projectRows,workstreamRows,workstreamStatusRows,progressLogRows]=await Promise.all([
         sb.select("maint_items", `active=eq.true&${cf}&order=sort_order.asc`),
         sb.select("maint_purchases", cf),
         sb.select("maint_issues", cf),
@@ -2356,6 +2888,10 @@ function AuthenticatedApp() {
         sb.select("maint_job_materials", cf),
         sb.select("maint_template_materials", cf),
         sb.select("purchase_slips", `app=eq.maintenance&${cf}`),
+        sb.select("projects", cf),
+        sb.select("project_workstreams", cf),
+        sb.select("project_workstream_status", cf),
+        sb.select("project_progress_logs", cf),
       ]);
       const slipMap={}; (slipRows||[]).forEach(s=>{slipMap[s.id]=s;});
       setSlips(slipMap);
@@ -2374,6 +2910,10 @@ function AuthenticatedApp() {
       });
       setJobMaterials(jobMatRows.map(r=>({...r,qty_planned:+r.qty_planned,qty_used:r.qty_used==null?null:+r.qty_used})));
       setTemplateMaterials(tplMatRows.map(r=>({...r,qty:+r.qty})));
+      setProjects(projectRows);
+      setWorkstreams(workstreamRows.map(r=>({...r,target_qty:+r.target_qty,baseline_qty:+r.baseline_qty,budget_cost:r.budget_cost==null?null:+r.budget_cost})));
+      setWorkstreamStatus(workstreamStatusRows);
+      setProgressLogs(progressLogRows.map(r=>({...r,crew_size:r.crew_size==null?null:+r.crew_size,qty_done:+r.qty_done,cost_incurred:r.cost_incurred==null?null:+r.cost_incurred})));
     }catch(e){setLoadErr(e.message);}
     finally{setLoading(false);}
   },[companyId]);
@@ -2582,7 +3122,12 @@ function AuthenticatedApp() {
           {page==="calendar"     && <Calendar locId={locId} jobs={jobs} jobMaterials={jobMaterials} items={items}
                                        purchases={purchases} issues={issues} destinations={destinations}
                                        templates={templates} setJobs={setJobs} setJobMaterials={setJobMaterials}
-                                       setIssues={setIssues} setTemplates={setTemplates} isAdmin={isAdmin} companyId={companyId}/>}
+                                       setIssues={setIssues} setTemplates={setTemplates} isAdmin={isAdmin} companyId={companyId}
+                                       projects={projects} workstreamStatus={workstreamStatus}/>}
+          {page==="projects"     && <ProjectsPage locId={locId} projects={projects} workstreams={workstreams}
+                                       workstreamStatus={workstreamStatus} progressLogs={progressLogs}
+                                       setProjects={setProjects} setWorkstreams={setWorkstreams} setProgressLogs={setProgressLogs}
+                                       isAdmin={isAdmin} companyId={companyId}/>}
           {page==="templates"    && isAdmin && <JobTemplates locId={locId} templates={templates} setTemplates={setTemplates}
                                        templateMaterials={templateMaterials} setTemplateMaterials={setTemplateMaterials}
                                        items={items} destinations={allDests} jobs={jobs} setJobs={setJobs}
