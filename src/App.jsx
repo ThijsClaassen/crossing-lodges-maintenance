@@ -2504,6 +2504,7 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, setWo
   const [logFor, setLogFor] = useState(null);
   const [editWs, setEditWs] = useState(null);
   const [showNewWs, setShowNewWs] = useState(false);
+  const [historyFor, setHistoryFor] = useState(null);
 
   const latestCrewFor = wsId => {
     const logs = progressLogs.filter(l=>l.workstream_id===wsId);
@@ -2587,6 +2588,7 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, setWo
               </td>
               <td style={{display:"flex",gap:5}}>
                 <button className="btn btn-primary btn-sm" onClick={()=>setLogFor(w)}>+ Log</button>
+                {isAdmin && <button className="btn btn-ghost btn-sm" onClick={()=>setHistoryFor(w)}>History</button>}
                 {isAdmin && <button className="btn btn-ghost btn-sm" onClick={()=>setEditWs(w)}>Edit</button>}
               </td>
             </tr>
@@ -2611,7 +2613,118 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, setWo
         refreshWorkstreamStatus={refreshWorkstreamStatus}
         onClose={()=>setShowNewWs(false)}/>
     )}
+    {historyFor && (
+      <WorkstreamLogHistory workstream={historyFor} progressLogs={progressLogs} setProgressLogs={setProgressLogs}
+        refreshWorkstreamStatus={refreshWorkstreamStatus} isAdmin={isAdmin}
+        onClose={()=>setHistoryFor(null)}/>
+    )}
   </>);
+}
+
+// Admin-only: full log history for a single workstream, with edit/delete
+// per entry — lets Thijs correct or remove data his employees logged
+// (e.g. a mistaken week or a test entry), which the "+ Log" flow itself
+// deliberately doesn't expose since it's meant to stay a quick weekly form.
+function WorkstreamLogHistory({ workstream, progressLogs, setProgressLogs, refreshWorkstreamStatus, isAdmin, onClose }) {
+  const [editLog, setEditLog] = useState(null);
+  const logs = progressLogs.filter(l=>l.workstream_id===workstream.id).sort((a,b)=>b.week_ending.localeCompare(a.week_ending));
+
+  const remove = async (log) => {
+    if (!window.confirm(`Delete the log for week ending ${log.week_ending}?`)) return;
+    try {
+      await sb.delete("project_progress_logs", log.id);
+      setProgressLogs(p=>p.filter(l=>l.id!==log.id));
+      await refreshWorkstreamStatus?.();
+    } catch(e) { alert("Error: "+e.message); }
+  };
+
+  return (<>
+    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal" style={{maxWidth:640}}>
+        <div className="modal-title">Progress History <span>{workstream.name}</span></div>
+        <div className="tbl-wrap"><table className="tbl">
+          <thead><tr><th>Week Ending</th><th className="num">Crew</th><th className="num">Qty Done</th>
+            <th className="num">Cost</th><th>Notes</th><th></th></tr></thead>
+          <tbody>
+            {logs.map(l=>(
+              <tr key={l.id}>
+                <td className="mono" style={{fontSize:11}}>{l.week_ending}</td>
+                <td className="num" style={{color:T.muted}}>{l.crew_size==null?"—":l.crew_size}</td>
+                <td className="num">{fmtQty(l.qty_done, workstream.unit)}</td>
+                <td className="num" style={{color:T.muted}}>{l.cost_incurred==null?"—":fmtR(l.cost_incurred)}</td>
+                <td style={{fontSize:12,color:T.muted}}>{l.notes||"—"}</td>
+                <td style={{display:"flex",gap:5}}>
+                  {isAdmin && <button className="btn btn-ghost btn-sm" onClick={()=>setEditLog(l)}>Edit</button>}
+                  {isAdmin && <button className="btn btn-danger btn-sm" onClick={()=>remove(l)}>x</button>}
+                </td>
+              </tr>
+            ))}
+            {logs.length===0 && <tr><td colSpan={6} className="empty">No logs yet for this workstream.</td></tr>}
+          </tbody>
+        </table></div>
+        <div style={{display:"flex",gap:9,marginTop:14}}>
+          <button className="btn btn-ghost" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+    {editLog && (
+      <EditLogForm log={editLog} workstream={workstream} setProgressLogs={setProgressLogs}
+        refreshWorkstreamStatus={refreshWorkstreamStatus} onClose={()=>setEditLog(null)}/>
+    )}
+  </>);
+}
+
+function EditLogForm({ log, workstream, setProgressLogs, refreshWorkstreamStatus, onClose }) {
+  const [form, setForm] = useState({
+    week_ending: log.week_ending,
+    crew_size: log.crew_size==null?"":String(log.crew_size),
+    qty_done: String(log.qty_done),
+    cost_incurred: log.cost_incurred==null?"":String(log.cost_incurred),
+    notes: log.notes||"",
+  });
+  const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    if (!form.week_ending || form.qty_done==="") { alert("Week ending and qty done are required."); return; }
+    setSaving(true);
+    try {
+      const patch = {
+        week_ending: form.week_ending,
+        crew_size: form.crew_size===""?null:parseInt(form.crew_size,10),
+        qty_done: parseFloat(form.qty_done)||0,
+        cost_incurred: form.cost_incurred===""?null:parseFloat(form.cost_incurred),
+        notes: form.notes.trim()||null,
+      };
+      await sb.update("project_progress_logs", log.id, patch);
+      setProgressLogs(p=>p.map(l=>l.id===log.id?{...l,...patch}:l));
+      await refreshWorkstreamStatus?.();
+      onClose();
+    } catch(e) { alert("Save failed: "+e.message); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal">
+        <div className="modal-title">Edit Log <span>{workstream.name}</span></div>
+        <div className="grid2">
+          <div className="field"><label>Week Ending</label><input type="date" value={form.week_ending} onChange={f("week_ending")}/></div>
+          <div className="field"><label>Crew Size</label><input type="number" value={form.crew_size} onChange={f("crew_size")}/></div>
+        </div>
+        <div className="grid2">
+          <div className="field"><label>Qty Done This Week ({WORKSTREAM_UNIT_LABEL[workstream.unit]})</label>
+            <input type="number" step="0.01" value={form.qty_done} onChange={f("qty_done")}/></div>
+          <div className="field"><label>Cost Incurred (R)</label><input type="number" step="0.01" value={form.cost_incurred} onChange={f("cost_incurred")}/></div>
+        </div>
+        <div className="field"><label>Notes</label><input type="text" value={form.notes} onChange={f("notes")}/></div>
+        <div style={{display:"flex",gap:9}}>
+          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving?"Saving...":"Save Changes"}</button>
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function WeeklyLogForm({ workstream, companyId, setProgressLogs, refreshWorkstreamStatus, onClose }) {
