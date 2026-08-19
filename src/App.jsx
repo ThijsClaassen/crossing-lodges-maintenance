@@ -2347,7 +2347,7 @@ function statusBadgeLabel(s) {
 }
 
 function ProjectsPage({ locId, projects, workstreams, workstreamStatus, progressLogs,
-                         setProjects, setWorkstreams, setProgressLogs, isAdmin, companyId }) {
+                         setProjects, setWorkstreams, setProgressLogs, refreshWorkstreamStatus, isAdmin, companyId }) {
   const [locFilter, setLocFilter] = useState("all");
   const [openProjectId, setOpenProjectId] = useState(null);
   const [showNewProject, setShowNewProject] = useState(false);
@@ -2371,7 +2371,7 @@ function ProjectsPage({ locId, projects, workstreams, workstreamStatus, progress
       <ProjectDetail project={openProject} workstreams={wsByProject[openProject.id]||[]}
         statusByWsId={statusByWsId} progressLogs={progressLogs}
         setWorkstreams={setWorkstreams} setProgressLogs={setProgressLogs}
-        setProjects={setProjects}
+        setProjects={setProjects} refreshWorkstreamStatus={refreshWorkstreamStatus}
         isAdmin={isAdmin} companyId={companyId}
         onBack={()=>setOpenProjectId(null)}/>
     );
@@ -2500,7 +2500,7 @@ function NewProjectForm({ locId, companyId, setProjects, onClose }) {
   );
 }
 
-function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, setWorkstreams, setProgressLogs, setProjects, isAdmin, companyId, onBack }) {
+function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, setWorkstreams, setProgressLogs, setProjects, refreshWorkstreamStatus, isAdmin, companyId, onBack }) {
   const [logFor, setLogFor] = useState(null);
   const [editWs, setEditWs] = useState(null);
   const [showNewWs, setShowNewWs] = useState(false);
@@ -2598,20 +2598,23 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, setWo
 
     {logFor && (
       <WeeklyLogForm workstream={logFor} companyId={companyId} setProgressLogs={setProgressLogs}
+        refreshWorkstreamStatus={refreshWorkstreamStatus}
         onClose={()=>setLogFor(null)}/>
     )}
     {editWs && (
       <EditWorkstreamForm workstream={editWs} setWorkstreams={setWorkstreams}
+        refreshWorkstreamStatus={refreshWorkstreamStatus}
         onClose={()=>setEditWs(null)}/>
     )}
     {showNewWs && (
       <NewWorkstreamForm project={project} companyId={companyId} setWorkstreams={setWorkstreams}
+        refreshWorkstreamStatus={refreshWorkstreamStatus}
         onClose={()=>setShowNewWs(false)}/>
     )}
   </>);
 }
 
-function WeeklyLogForm({ workstream, companyId, setProgressLogs, onClose }) {
+function WeeklyLogForm({ workstream, companyId, setProgressLogs, refreshWorkstreamStatus, onClose }) {
   const isoToday = new Date().toISOString().slice(0,10);
   const [form, setForm] = useState({week_ending:isoToday, crew_size:"", qty_done:"", cost_incurred:"", notes:""});
   const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
@@ -2630,6 +2633,7 @@ function WeeklyLogForm({ workstream, companyId, setProgressLogs, onClose }) {
       };
       const ins = await sb.insert("project_progress_logs", row);
       setProgressLogs(p=>[...p, ins]);
+      await refreshWorkstreamStatus?.();
       onClose();
     } catch(e) { alert("Save failed: "+e.message); }
     finally { setSaving(false); }
@@ -2658,7 +2662,7 @@ function WeeklyLogForm({ workstream, companyId, setProgressLogs, onClose }) {
   );
 }
 
-function EditWorkstreamForm({ workstream, setWorkstreams, onClose }) {
+function EditWorkstreamForm({ workstream, setWorkstreams, refreshWorkstreamStatus, onClose }) {
   const [form, setForm] = useState({...workstream, target_qty:String(workstream.target_qty), baseline_qty:String(workstream.baseline_qty), budget_cost: workstream.budget_cost==null?"":String(workstream.budget_cost)});
   const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
   const [saving, setSaving] = useState(false);
@@ -2675,6 +2679,7 @@ function EditWorkstreamForm({ workstream, setWorkstreams, onClose }) {
       };
       await sb.update("project_workstreams", workstream.id, patch);
       setWorkstreams(p=>p.map(w=>w.id===workstream.id?{...w,...patch}:w));
+      await refreshWorkstreamStatus?.();
       onClose();
     } catch(e) { alert("Save failed: "+e.message); }
     finally { setSaving(false); }
@@ -2685,6 +2690,7 @@ function EditWorkstreamForm({ workstream, setWorkstreams, onClose }) {
     try {
       await sb.delete("project_workstreams", workstream.id);
       setWorkstreams(p=>p.filter(w=>w.id!==workstream.id));
+      await refreshWorkstreamStatus?.();
       onClose();
     } catch(e) { alert("Error: "+e.message); }
   };
@@ -2724,7 +2730,7 @@ function EditWorkstreamForm({ workstream, setWorkstreams, onClose }) {
   );
 }
 
-function NewWorkstreamForm({ project, companyId, setWorkstreams, onClose }) {
+function NewWorkstreamForm({ project, companyId, setWorkstreams, refreshWorkstreamStatus, onClose }) {
   const isoToday = new Date().toISOString().slice(0,10);
   const [form, setForm] = useState({name:"",unit:"km",target_qty:"",baseline_qty:"0",baseline_date:isoToday,budget_cost:""});
   const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
@@ -2743,6 +2749,7 @@ function NewWorkstreamForm({ project, companyId, setWorkstreams, onClose }) {
       };
       const ins = await sb.insert("project_workstreams", row);
       setWorkstreams(p=>[...p, ins]);
+      await refreshWorkstreamStatus?.();
       onClose();
     } catch(e) { alert("Save failed: "+e.message); }
     finally { setSaving(false); }
@@ -2916,6 +2923,20 @@ function AuthenticatedApp() {
       setProgressLogs(progressLogRows.map(r=>({...r,crew_size:r.crew_size==null?null:+r.crew_size,qty_done:+r.qty_done,cost_incurred:r.cost_incurred==null?null:+r.cost_incurred})));
     }catch(e){setLoadErr(e.message);}
     finally{setLoading(false);}
+  },[companyId]);
+
+  // project_workstream_status is a live-computed view — after logging
+  // progress or editing a workstream's target/baseline, its numbers are
+  // stale until re-fetched. Re-fetching the whole app (loadAll) would work
+  // but is slow/jarring for what's really a one-table refresh, so Projects
+  // gets its own narrow refresh instead. Called after every write that
+  // could change the computed columns (see ProjectsPage/ProjectDetail).
+  const refreshWorkstreamStatus = useCallback(async()=>{
+    if(!companyId) return;
+    try{
+      const rows = await sb.select("project_workstream_status", `company_id=eq.${companyId}`);
+      setWorkstreamStatus(rows);
+    }catch(e){ console.error("Failed to refresh workstream status:", e.message); }
   },[companyId]);
 
   useEffect(()=>{loadAll();},[loadAll]);
@@ -3127,6 +3148,7 @@ function AuthenticatedApp() {
           {page==="projects"     && <ProjectsPage locId={locId} projects={projects} workstreams={workstreams}
                                        workstreamStatus={workstreamStatus} progressLogs={progressLogs}
                                        setProjects={setProjects} setWorkstreams={setWorkstreams} setProgressLogs={setProgressLogs}
+                                       refreshWorkstreamStatus={refreshWorkstreamStatus}
                                        isAdmin={isAdmin} companyId={companyId}/>}
           {page==="templates"    && isAdmin && <JobTemplates locId={locId} templates={templates} setTemplates={setTemplates}
                                        templateMaterials={templateMaterials} setTemplateMaterials={setTemplateMaterials}
