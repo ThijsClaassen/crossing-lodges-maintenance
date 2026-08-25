@@ -8,6 +8,7 @@ import SetPassword from "./SetPassword.jsx";
 import { CompanyProvider, useCompany } from "./CompanyContext.jsx";
 import { uploadPurchaseSlip, getSlipUrl } from "./slipUpload.js";
 import { availableMaintenanceStaff } from "./maintenanceStaffEngine.js";
+import { listMembers as listBillingMembers, logMemberPurchase } from "./memberPurchase.js";
 
 const fmtR  = n=>`R ${Number(n||0).toLocaleString("en-ZA",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 const fmtN  = n=>Number(n||0).toLocaleString("en-ZA",{maximumFractionDigits:3});
@@ -528,7 +529,62 @@ function ViewSlipLink({ storagePath }) {
 }
 
 // ─── PURCHASES ───────────────────────────────────────────────────────────────
+// Quick-log a purchase straight to a member's account instead of this
+// app's own stock — see memberPurchase.js. Only rendered when
+// memberBillingEnabled is true for the current company (Demo only today).
+function MemberPurchaseModal({ companyId, locId, onClose }) {
+  const [members,setMembers]=useState([]);
+  const [form,setForm]=useState({member_id:"",date:new Date().toISOString().slice(0,10),description:"",amount:""});
+  const [saving,setSaving]=useState(false);
+  const [message,setMessage]=useState("");
+
+  useEffect(()=>{
+    listBillingMembers({companyId}).then(m=>{
+      setMembers(m);
+      setForm(f=>({...f,member_id:f.member_id||m[0]?.id||""}));
+    }).catch(()=>setMembers([]));
+  },[companyId]);
+
+  const save=async()=>{
+    setMessage("");
+    if(!form.member_id||!form.description||!form.amount){setMessage("Pick a member and fill in description + amount.");return;}
+    setSaving(true);
+    try{
+      await logMemberPurchase({companyId,memberId:form.member_id,locationId:locId,chargeDate:form.date,description:form.description,amount:form.amount});
+      setMessage("Logged to their member account.");
+      setForm(f=>({...f,description:"",amount:""}));
+    }catch(e){setMessage(e.message||"Could not save.");}
+    finally{setSaving(false);}
+  };
+
+  return (
+    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal">
+        <div className="modal-title">Log <span>Member Purchase</span></div>
+        <div style={{fontSize:12,color:T.muted,marginBottom:10}}>Bought on a member's behalf — goes straight to their account, not this app's stock.</div>
+        <div className="field"><label>Member</label>
+          <select value={form.member_id} onChange={e=>setForm(p=>({...p,member_id:e.target.value}))}>
+            {members.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+        </div>
+        <div className="grid2">
+          <div className="field"><label>Date</label><input type="date" value={form.date} onChange={e=>setForm(p=>({...p,date:e.target.value}))}/></div>
+          <div className="field"><label>Amount (R)</label><input type="number" step="0.01" value={form.amount} onChange={e=>setForm(p=>({...p,amount:e.target.value}))}/></div>
+        </div>
+        <div className="field"><label>Description</label><input type="text" value={form.description} onChange={e=>setForm(p=>({...p,description:e.target.value}))} placeholder="e.g. Hardware for repair"/></div>
+        {message&&<div style={{fontSize:12,color:T.muted,marginBottom:8}}>{message}</div>}
+        <div style={{display:"flex",gap:9}}>
+          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving?"Saving…":"Log to member account"}</button>
+          <button className="btn btn-ghost" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Purchases({ locId, items, purchases, setPurchases, isAdmin, companyId, slips, onSlipAttached }) {
+  const { memberBillingEnabled } = useCompany();
+  const [showMemberForm,setShowMemberForm]=useState(false);
   const [showForm,setShowForm]=useState(false);
   const blank={item_id:"",date:today(),qty:"",total_cost:"",supplier:"",notes:"",pendingSlipBlob:null,pendingSlipName:""};
   const [form,setForm]=useState(blank);
@@ -568,10 +624,12 @@ function Purchases({ locId, items, purchases, setPurchases, isAdmin, companyId, 
       <div className="strip-item"><div className="strip-label">Total Spend</div><div className="strip-val">{fmtR(totalSpend)}</div></div>
       <div className="strip-item"><div className="strip-label">Units Purchased</div><div className="strip-val">{fmtN(totalUnits)}</div></div>
       <div className="strip-item"><div className="strip-label">Entries</div><div className="strip-val">{purchases.length}</div></div>
-      <div style={{marginLeft:"auto"}}>
+      <div style={{marginLeft:"auto",display:"flex",gap:9}}>
+        {memberBillingEnabled && <button className="btn btn-ghost" onClick={()=>setShowMemberForm(true)}>+ Log Member Purchase</button>}
         <button className="btn btn-primary" onClick={()=>{setForm({...blank,date:today()});setShowForm(true);}}>+ Log Purchase</button>
       </div>
     </div>
+    {showMemberForm && <MemberPurchaseModal companyId={companyId} locId={locId} onClose={()=>setShowMemberForm(false)}/>}
     <div className="tbl-wrap"><table className="tbl">
       <thead><tr><th>Date</th><th>Item</th><th className="num">Qty</th><th className="num">Total Cost</th>
         <th className="num">Cost/Unit</th><th>Supplier</th><th>Notes</th><th>Slip</th><th></th></tr></thead>
