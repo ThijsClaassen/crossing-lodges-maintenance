@@ -8,7 +8,7 @@ import SetPassword from "./SetPassword.jsx";
 import { CompanyProvider, useCompany } from "./CompanyContext.jsx";
 import { uploadPurchaseSlip, getSlipUrl } from "./slipUpload.js";
 import { availableMaintenanceStaff } from "./maintenanceStaffEngine.js";
-import { listMembers as listBillingMembers, logMemberPurchase } from "./memberPurchase.js";
+import { listMembers as listBillingMembers, logMemberPurchase, listPendingCharges, addPendingCharges, billPendingCharges, deletePendingCharge } from "./memberPurchase.js";
 
 const fmtR  = n=>`R ${Number(n||0).toLocaleString("en-ZA",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 const fmtN  = n=>Number(n||0).toLocaleString("en-ZA",{maximumFractionDigits:3});
@@ -62,6 +62,13 @@ function round2(n){ return Math.round((Number(n)||0)*100)/100; }
 function applyVatToRows(rows, incl, vatRate){
   const divisor = incl ? 1+(Number(vatRate)||0)/100 : 1;
   return rows.map(r=>({...r, total_cost: round2(r.raw_total/divisor)}));
+}
+// Member purchases are never VAT-stripped — the VAT-INCLUSIVE amount as
+// printed on the slip is what gets forwarded to the member's account,
+// unlike total_cost above which strips VAT for this app's own costing.
+function vatInclusiveAmount(row, incl, vatRate){
+  const multiplier = incl ? 1 : 1+(Number(vatRate)||0)/100;
+  return round2(row.raw_total*multiplier);
 }
 
 // ─── AUTH ────────────────────────────────────────────────────────────────────
@@ -368,7 +375,7 @@ function Destinations({ locId, destinations, setDestinations, companyId }) {
 // whether the OCR read is used — that's the actual 7-year compliance
 // record (see add_purchase_slips.sql); the parsed line items are just a
 // convenience so nobody has to retype what's already printed on the slip.
-function MaintSlipScanCard({ items, locId, companyId, onSaved }) {
+function MaintSlipScanCard({ items, locId, companyId, onSaved, memberBillingEnabled, onMemberPending }) {
   const [scanning,setScanning]=useState(false);
   const [scanError,setScanError]=useState("");
   const [review,setReview]=useState(null);
@@ -392,7 +399,7 @@ function MaintSlipScanCard({ items, locId, companyId, onSaved }) {
       const rowsRaw=(data.line_items||[]).map((li,idx)=>{
         const m=findBestItemMatch(li.raw_text, items);
         const rawTotal = li.total_price ?? ((li.unit_price&&li.qty) ? li.unit_price*li.qty : 0);
-        return { key: idx, raw_text: li.raw_text, item_id: m.confident?m.match.id:"", confident:m.confident, guessName:m.match?.description||"", qty: li.qty??1, raw_total:rawTotal, total_cost:rawTotal, skip:false };
+        return { key: idx, raw_text: li.raw_text, item_id: m.confident?m.match.id:"", confident:m.confident, guessName:m.match?.description||"", qty: li.qty??1, raw_total:rawTotal, total_cost:rawTotal, skip:false, billToMember:false };
       });
       setReview({
         date: fromISO(data.date_guess || new Date().toISOString().slice(0,10)),
@@ -412,8 +419,9 @@ function MaintSlipScanCard({ items, locId, companyId, onSaved }) {
   const cancelReview=()=>{ setReview(null); setScanError(""); setSaveStatus(""); };
 
   const approve=async()=>{
-    const toSave=review.rows.filter(r=>!r.skip && r.item_id && Number(r.qty)>0);
-    if(toSave.length===0){ setSaveStatus("Nothing to save — pick an item for at least one line, or cancel."); return; }
+    const toSave=review.rows.filter(r=>!r.skip && !r.billToMember && r.item_id && Number(r.qty)>0);
+    const toMember=review.rows.filter(r=>!r.skip && r.billToMember);
+    if(toSave.length===0 && toMember.length===0){ setSaveStatus("Nothing to save — pick an item (or tick Bill to Member) for at least one line, or cancel."); return; }
     setSaving(true); setSaveStatus("");
     try{
       const slip = await uploadPurchaseSlip({
@@ -428,8 +436,23 @@ function MaintSlipScanCard({ items, locId, companyId, onSaved }) {
         await sb.insert("maint_purchases", row);
         saved.push(row);
       }
+      if(toMember.length){
+        await addPendingCharges({
+          companyId, locationId: locId, slipId: slip.id,
+          rows: toMember.map(r=>({
+            chargeDate: toISO(review.date),
+            description: r.guessName||r.raw_text,
+            qty: Number(r.qty)||null,
+            amount: vatInclusiveAmount(r, review.pricesIncludeVat, review.vatRate),
+          })),
+        });
+        onMemberPending?.();
+      }
       onSaved(saved, slip);
-      setSaveStatus(`Saved ${saved.length} purchase${saved.length===1?"":"s"} and attached the slip photo.`);
+      const parts=[];
+      if(saved.length) parts.push(`${saved.length} purchase${saved.length===1?"":"s"}`);
+      if(toMember.length) parts.push(`${toMember.length} line${toMember.length===1?"":"s"} sent to Member Purchase`);
+      setSaveStatus(`Saved ${parts.join(" and ")} and attached the slip photo.`);
       setReview(null);
     }catch(err){ setSaveStatus(`Could not save: ${err.message}`); }
     finally{ setSaving(false); }
@@ -460,13 +483,14 @@ function MaintSlipScanCard({ items, locId, companyId, onSaved }) {
           </div>
           <div style={{fontSize:12,color:T.muted,margin:"8px 0"}}>
             {review.rows.length} line{review.rows.length===1?"":"s"} read from the slip. Green = matched automatically — check it's right. Amber = pick the item, or tick Skip to leave it out.
+            {memberBillingEnabled && <> A line bought on a member's behalf can be ticked <strong>Bill to Member</strong> instead — it skips this app's stock and lands in the Member Purchase list to be billed to whoever it's for, at the full VAT-inclusive amount as printed on the slip.</>}
             {review.slipTotal!=null && <> Slip total printed: <strong style={{color:T.cream}}>{fmtR(review.slipTotal)}</strong>.</>}
           </div>
           <div className="tbl-wrap"><table className="tbl">
-            <thead><tr><th>Slip text</th><th>Item</th><th className="num">Qty</th><th className="num">Total cost</th><th>Skip</th></tr></thead>
+            <thead><tr><th>Slip text</th><th>Item</th><th className="num">Qty</th><th className="num">Total cost</th><th>Skip</th>{memberBillingEnabled && <th>Bill to Member</th>}</tr></thead>
             <tbody>
               {review.rows.map(r=>(
-                <tr key={r.key} style={{background:r.skip?"rgba(0,0,0,.15)":r.confident?"rgba(90,155,106,.06)":"rgba(184,147,90,.08)"}}>
+                <tr key={r.key} style={{background:r.skip?"rgba(0,0,0,.15)":r.billToMember?"rgba(184,147,90,.10)":r.confident?"rgba(90,155,106,.06)":"rgba(184,147,90,.08)"}}>
                   <td style={{fontSize:12,color:T.muted,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.raw_text}</td>
                   <td>
                     <select value={r.item_id} onChange={e=>updateRow(r.key,{item_id:e.target.value})} style={{minWidth:160}}>
@@ -477,6 +501,7 @@ function MaintSlipScanCard({ items, locId, companyId, onSaved }) {
                   <td className="num"><input type="number" style={{width:70}} value={r.qty} onChange={e=>updateRow(r.key,{qty:e.target.value})}/></td>
                   <td className="num"><input type="number" step="0.01" style={{width:90}} value={r.total_cost} onChange={e=>updateRow(r.key,{total_cost:e.target.value})}/></td>
                   <td><input type="checkbox" checked={r.skip} onChange={e=>updateRow(r.key,{skip:e.target.checked})}/></td>
+                  {memberBillingEnabled && <td><input type="checkbox" checked={r.billToMember} onChange={e=>updateRow(r.key,{billToMember:e.target.checked, skip:e.target.checked?false:r.skip})}/></td>}
                 </tr>
               ))}
             </tbody>
@@ -532,18 +557,60 @@ function ViewSlipLink({ storagePath }) {
 // Quick-log a purchase straight to a member's account instead of this
 // app's own stock — see memberPurchase.js. Only rendered when
 // memberBillingEnabled is true for the current company (Demo only today).
-function MemberPurchaseModal({ companyId, locId, onClose }) {
+function MemberPurchaseModal({ companyId, locId, onClose, pendingRefresh, onBilled }) {
   const [members,setMembers]=useState([]);
   const [form,setForm]=useState({member_id:"",date:new Date().toISOString().slice(0,10),description:"",amount:""});
   const [saving,setSaving]=useState(false);
   const [message,setMessage]=useState("");
 
+  // Pending queue — lines ticked "Bill to Member" during a slip scan land
+  // here first (see MaintSlipScanCard/memberPurchase.js) instead of
+  // billing immediately, so nothing gets forgotten and a slip mixing
+  // parts/stock + member items can still be scanned in one go.
+  const [pending,setPending]=useState([]);
+  const [pendingLoading,setPendingLoading]=useState(false);
+  const [selected,setSelected]=useState(()=>new Set());
+  const [billMemberId,setBillMemberId]=useState("");
+  const [billing,setBilling]=useState(false);
+  const [billMessage,setBillMessage]=useState("");
+
+  const loadPending=()=>{
+    setPendingLoading(true);
+    listPendingCharges({companyId}).then(rows=>setPending(rows)).catch(()=>setPending([])).finally(()=>setPendingLoading(false));
+  };
+
   useEffect(()=>{
     listBillingMembers({companyId}).then(m=>{
       setMembers(m);
       setForm(f=>({...f,member_id:f.member_id||m[0]?.id||""}));
+      setBillMemberId(id=>id||m[0]?.id||"");
     }).catch(()=>setMembers([]));
   },[companyId]);
+
+  useEffect(()=>{ loadPending(); },[companyId,pendingRefresh]);
+
+  const toggleSelected=id=>setSelected(s=>{const next=new Set(s); if(next.has(id))next.delete(id); else next.add(id); return next;});
+  const toggleSelectAll=()=>setSelected(s=>s.size===pending.length?new Set():new Set(pending.map(p=>p.id)));
+
+  const billSelected=async()=>{
+    setBillMessage("");
+    if(!billMemberId||selected.size===0){setBillMessage("Pick a member and tick at least one line.");return;}
+    setBilling(true);
+    try{
+      await billPendingCharges({companyId,memberId:billMemberId,locationId:locId,pendingIds:Array.from(selected)});
+      setSelected(new Set());
+      setBillMessage("Billed to their member account.");
+      loadPending();
+      onBilled?.();
+    }catch(e){setBillMessage(e.message||"Could not bill those lines.");}
+    finally{setBilling(false);}
+  };
+
+  const removePending=async(id)=>{
+    if(!window.confirm("Remove this line without billing it to anyone?"))return;
+    try{ await deletePendingCharge({id}); loadPending(); }
+    catch(e){ alert("Could not remove that line: "+e.message); }
+  };
 
   const save=async()=>{
     setMessage("");
@@ -562,6 +629,34 @@ function MemberPurchaseModal({ companyId, locId, onClose }) {
       <div className="modal">
         <div className="modal-title">Log <span>Member Purchase</span></div>
         <div style={{fontSize:12,color:T.muted,marginBottom:10}}>Bought on a member's behalf — goes straight to their account, not this app's stock.</div>
+
+        {(pendingLoading||pending.length>0) && (
+          <div style={{marginBottom:14,paddingBottom:12,borderBottom:`1px solid ${T.border}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+              <div style={{fontSize:13,fontWeight:600}}>Pending — tick lines to bill</div>
+              {pending.length>0 && <button className="btn btn-ghost btn-sm" type="button" onClick={toggleSelectAll}>{selected.size===pending.length?"Clear all":"Select all"}</button>}
+            </div>
+            <div style={{fontSize:12,color:T.muted,marginBottom:8}}>Lines ticked "Bill to Member" when scanning a slip land here first — nothing bills until you tick them below and pick who to bill.</div>
+            {pendingLoading&&pending.length===0&&<div style={{fontSize:12,color:T.muted}}>Loading…</div>}
+            {pending.map(p=>(
+              <div key={p.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderTop:`1px solid ${T.border}`}}>
+                <label style={{display:"flex",gap:8,alignItems:"center",cursor:"pointer",flex:1}}>
+                  <input type="checkbox" checked={selected.has(p.id)} onChange={()=>toggleSelected(p.id)}/>
+                  <span style={{fontSize:13}}>{p.description}{p.qty?` × ${p.qty}`:""} — {fmtR(p.amount)}<span style={{color:T.muted,fontSize:11}}> ({p.charge_date})</span></span>
+                </label>
+                <button className="btn btn-ghost btn-sm" type="button" onClick={()=>removePending(p.id)}>Remove</button>
+              </div>
+            ))}
+            <div style={{display:"flex",gap:8,marginTop:10,flexWrap:"wrap"}}>
+              <select value={billMemberId} onChange={e=>setBillMemberId(e.target.value)}>
+                {members.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
+              </select>
+              <button className="btn btn-primary" type="button" onClick={billSelected} disabled={billing||selected.size===0}>{billing?"Billing…":`Bill ${selected.size||""} selected to member`}</button>
+            </div>
+            {billMessage&&<div style={{fontSize:12,marginTop:6,color:T.muted}}>{billMessage}</div>}
+          </div>
+        )}
+
         <div className="field"><label>Member</label>
           <select value={form.member_id} onChange={e=>setForm(p=>({...p,member_id:e.target.value}))}>
             {members.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
@@ -585,6 +680,7 @@ function MemberPurchaseModal({ companyId, locId, onClose }) {
 function Purchases({ locId, items, purchases, setPurchases, isAdmin, companyId, slips, onSlipAttached }) {
   const { memberBillingEnabled } = useCompany();
   const [showMemberForm,setShowMemberForm]=useState(false);
+  const [memberPendingRefresh,setMemberPendingRefresh]=useState(0);
   const [showForm,setShowForm]=useState(false);
   const blank={item_id:"",date:today(),qty:"",total_cost:"",supplier:"",notes:"",pendingSlipBlob:null,pendingSlipName:""};
   const [form,setForm]=useState(blank);
@@ -619,7 +715,7 @@ function Purchases({ locId, items, purchases, setPurchases, isAdmin, companyId, 
   const totalUnits=purchases.reduce((s,p)=>s+(p.qty||0),0);
   const itemName=id=>items.find(i=>i.id===id)?.description||id;
   return (<>
-    <MaintSlipScanCard items={items} locId={locId} companyId={companyId} onSaved={(saved,slip)=>{setPurchases(p=>[...p,...saved]);onSlipAttached(slip);}}/>
+    <MaintSlipScanCard items={items} locId={locId} companyId={companyId} onSaved={(saved,slip)=>{setPurchases(p=>[...p,...saved]);onSlipAttached(slip);}} memberBillingEnabled={memberBillingEnabled} onMemberPending={()=>setMemberPendingRefresh(n=>n+1)}/>
     <div className="strip">
       <div className="strip-item"><div className="strip-label">Total Spend</div><div className="strip-val">{fmtR(totalSpend)}</div></div>
       <div className="strip-item"><div className="strip-label">Units Purchased</div><div className="strip-val">{fmtN(totalUnits)}</div></div>
@@ -629,7 +725,7 @@ function Purchases({ locId, items, purchases, setPurchases, isAdmin, companyId, 
         <button className="btn btn-primary" onClick={()=>{setForm({...blank,date:today()});setShowForm(true);}}>+ Log Purchase</button>
       </div>
     </div>
-    {showMemberForm && <MemberPurchaseModal companyId={companyId} locId={locId} onClose={()=>setShowMemberForm(false)}/>}
+    {showMemberForm && <MemberPurchaseModal companyId={companyId} locId={locId} onClose={()=>setShowMemberForm(false)} pendingRefresh={memberPendingRefresh}/>}
     <div className="tbl-wrap"><table className="tbl">
       <thead><tr><th>Date</th><th>Item</th><th className="num">Qty</th><th className="num">Total Cost</th>
         <th className="num">Cost/Unit</th><th>Supplier</th><th>Notes</th><th>Slip</th><th></th></tr></thead>
