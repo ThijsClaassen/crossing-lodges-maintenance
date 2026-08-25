@@ -800,11 +800,16 @@ function MemberPurchaseModal({ companyId, locId, onClose, pendingRefresh, onBill
   );
 }
 
-function Purchases({ locId, items, purchases, setPurchases, isAdmin, companyId, slips, onSlipAttached }) {
+function Purchases({ locId, items, purchases, setPurchases, isAdmin, companyId, slips, onSlipAttached, creditNotes, setCreditNotes, setIssues }) {
   const { memberBillingEnabled } = useCompany();
   const [showMemberForm,setShowMemberForm]=useState(false);
   const [memberPendingRefresh,setMemberPendingRefresh]=useState(0);
   const [showForm,setShowForm]=useState(false);
+  // Credit Notes (2026-08-25) — lives inside Purchases as a toggle rather
+  // than its own nav page: it's the same "wrong thing was bought" moment as
+  // a purchase, just the reverse direction, so it belongs next to the
+  // purchase form instead of forcing a page switch to find it.
+  const [showCredits,setShowCredits]=useState(false);
   const blank={item_id:"",date:today(),qty:"",total_cost:"",supplier:"",notes:"",pendingSlipBlob:null,pendingSlipName:""};
   const [form,setForm]=useState(blank);
   const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
@@ -845,10 +850,12 @@ function Purchases({ locId, items, purchases, setPurchases, isAdmin, companyId, 
       <div className="strip-item"><div className="strip-label">Entries</div><div className="strip-val">{purchases.length}</div></div>
       <div style={{marginLeft:"auto",display:"flex",gap:9}}>
         {memberBillingEnabled && <button className="btn btn-ghost" onClick={()=>setShowMemberForm(true)}>+ Log Member Purchase</button>}
+        <button className="btn btn-ghost" onClick={()=>setShowCredits(s=>!s)}>{showCredits?"Hide Credit Notes":"Credit Note"}</button>
         <button className="btn btn-primary" onClick={()=>{setForm({...blank,date:today()});setShowForm(true);}}>+ Log Purchase</button>
       </div>
     </div>
     {showMemberForm && <MemberPurchaseModal companyId={companyId} locId={locId} onClose={()=>setShowMemberForm(false)} pendingRefresh={memberPendingRefresh}/>}
+    {showCredits && <CreditNotes locId={locId} items={items} creditNotes={creditNotes} setCreditNotes={setCreditNotes} setIssues={setIssues} isAdmin={isAdmin} companyId={companyId} slips={slips} onSlipAttached={onSlipAttached}/>}
     <div className="tbl-wrap"><table className="tbl">
       <thead><tr><th>Date</th><th>Item</th><th className="num">Qty</th><th className="num">Total Cost</th>
         <th className="num">Cost/Unit</th><th>Supplier</th><th>Notes</th><th>Slip</th><th></th></tr></thead>
@@ -3664,7 +3671,6 @@ const PAGES=[
   {id:"projects",    label:"Projects",     section:"Schedule",   adminOnly:false},
   {id:"templates",   label:"Job Templates",section:"Schedule",   adminOnly:true},
   {id:"purchases",   label:"Purchases",    section:"Stock",      adminOnly:false},
-  {id:"credits",     label:"Credit Notes", section:"Stock",      adminOnly:true},
   {id:"issues",      label:"Issues",       section:"Stock",      adminOnly:false},
   {id:"count",       label:"Stock Count",  section:"Stock",      adminOnly:false},
   {id:"orders",      label:"Orders",       section:"Stock",      adminOnly:false},
@@ -4031,8 +4037,7 @@ function AuthenticatedApp() {
 
         <div className="section">
           {page==="dashboard"    && <Dashboard items={items} purchases={purchases} issues={issues} counts={counts}/>}
-          {page==="purchases"    && <Purchases locId={locId} items={items} purchases={purchases} setPurchases={setPurchases} isAdmin={isAdmin} companyId={companyId} slips={slips} onSlipAttached={onSlipAttached}/>}
-          {page==="credits"      && <CreditNotes locId={locId} items={items} creditNotes={creditNotes} setCreditNotes={setCreditNotes} setIssues={setIssues} isAdmin={isAdmin} companyId={companyId} slips={slips} onSlipAttached={onSlipAttached}/>}
+          {page==="purchases"    && <Purchases locId={locId} items={items} purchases={purchases} setPurchases={setPurchases} isAdmin={isAdmin} companyId={companyId} slips={slips} onSlipAttached={onSlipAttached} creditNotes={creditNotes} setCreditNotes={setCreditNotes} setIssues={setIssues}/>}
           {page==="issues"       && <Issues locId={locId} items={items} issues={issues} setIssues={setIssues}
                                        destinations={destinations} purchases={purchases} jobs={jobs} isAdmin={isAdmin} companyId={companyId}/>}
           {page==="count"        && <StockCount locId={locId} items={items} purchases={purchases} issues={issues} counts={counts} setCounts={setCounts} companyId={companyId}/>}
