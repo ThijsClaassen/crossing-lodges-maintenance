@@ -17,6 +17,19 @@ const toISO   = d=>{ if(!d)return""; const[dd,mm,yyyy]=d.split("/"); return `${y
 const fromISO = d=>{ if(!d)return""; const[yyyy,mm,dd]=d.split("-"); return `${dd}/${mm}/${yyyy}`; };
 const today = ()=>{ const d=new Date(); return `${String(d.getDate()).padStart(2,"0")}/${String(d.getMonth()+1).padStart(2,"0")}/${d.getFullYear()}`; };
 
+// Supplier Credit Notes (2026-08-25) — when the wrong item was bought and
+// has to go back to the supplier. Reasons match the shared
+// supplier_credit_notes table's check constraint (see
+// add_supplier_credit_notes.sql) — keep in sync across all 5 apps.
+const CREDIT_REASONS = [
+  { value: "wrong_item", label: "Wrong item" },
+  { value: "damaged", label: "Damaged" },
+  { value: "short_delivery", label: "Short delivery" },
+  { value: "overcharged", label: "Overcharged" },
+  { value: "duplicate", label: "Duplicate" },
+  { value: "other", label: "Other" },
+];
+
 // ─── SLIP SCANNING HELPERS ───────────────────────────────────────────────────
 // Shared by the Purchases tab's "Scan slip" flow (2026-08-12) — resize a
 // photo before it's sent anywhere (keeps it well under the serverless body
@@ -1012,6 +1025,156 @@ function Issues({ locId, items, issues, setIssues, destinations, purchases, jobs
       </div>
     )}
     {destDetail && <DestinationDetail row={destDetail} onClose={()=>setDestDetail(null)}/>}
+  </>);
+}
+
+// ─── CREDIT NOTES ────────────────────────────────────────────────────────────
+// When the wrong item was bought and has to go back to the supplier: reduces
+// stock the same way a normal issue does (a plain maint_issues row, tagged in
+// its notes rather than a reason column — this app's issues have never had
+// one, they're tracked by destination instead) and logs a row to the shared
+// supplier_credit_notes table so Finance Dashboard can cross-check it
+// against the supplier's statement, same as purchases already are.
+function CreditNotes({ locId, items, creditNotes, setCreditNotes, setIssues, isAdmin, companyId, slips, onSlipAttached }) {
+  const [showForm,setShowForm]=useState(false);
+  const blank={item_id:"",date:today(),qty:"",unit_cost:"",supplier:"",reason:"wrong_item",credit_note_number:"",notes:"",pendingSlipBlob:null,pendingSlipName:""};
+  const [form,setForm]=useState(blank);
+  const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
+
+  const pickSlipFile=async e=>{
+    const file=e.target.files?.[0]; e.target.value="";
+    if(!file)return;
+    const resized=await resizeImageFile(file);
+    setForm(p=>({...p,pendingSlipBlob:resized,pendingSlipName:file.name}));
+  };
+
+  const itemName=id=>items.find(i=>i.id===id)?.description||id;
+  const qtyNum = parseFloat(form.qty)||0;
+  const unitCostNum = parseFloat(form.unit_cost)||0;
+  const totalCreditPreview = Math.round(qtyNum*unitCostNum*100)/100;
+
+  const save=async()=>{
+    if(!form.item_id||!form.qty||!form.supplier)return;
+    try{
+      let slipId=null;
+      if(form.pendingSlipBlob){
+        const slip=await uploadPurchaseSlip({companyId, locationId:locId, blob:form.pendingSlipBlob});
+        slipId=slip.id;
+        onSlipAttached(slip);
+      }
+
+      // Dual-write: a normal stock-reducing issue first (so every existing
+      // stock-count/reorder calculation just works), then the financial
+      // credit-note record, linked back to the issue it created.
+      const issueRow={id:uid(),location_id:locId,item_id:form.item_id,date:form.date,
+        qty:qtyNum,destination_id:null,dest_name:null,
+        notes:`Credit note${form.credit_note_number?" #"+form.credit_note_number:""} — ${form.supplier}`,
+        company_id:companyId};
+      await sb.insert("maint_issues", issueRow);
+      setIssues(p=>[...p,issueRow]);
+
+      const cnRow={id:uid(),company_id:companyId,app:"maintenance",location_id:locId,period:null,
+        item_id:form.item_id,item_description:itemName(form.item_id),issue_id:issueRow.id,
+        qty:qtyNum,unit_cost:unitCostNum,total_credit:totalCreditPreview,supplier:form.supplier,
+        reason:form.reason,credit_note_number:form.credit_note_number||null,
+        date:toISO(form.date),notes:form.notes||null,slip_id:slipId};
+      await sb.insert("supplier_credit_notes", cnRow);
+      setCreditNotes(p=>[...p,cnRow]);
+
+      setForm({...blank,date:form.date});
+      setShowForm(false);
+    }catch(e){alert("Save failed: "+e.message);}
+  };
+
+  const remove=async c=>{
+    if(!window.confirm("Delete this credit note? This also reverses the stock it returned."))return;
+    try{
+      await sb.delete("supplier_credit_notes", c.id);
+      setCreditNotes(p=>p.filter(x=>x.id!==c.id));
+      if(c.issue_id){
+        await sb.delete("maint_issues", c.issue_id);
+        setIssues(p=>p.filter(x=>x.id!==c.issue_id));
+      }
+    }catch(e){alert("Error: "+e.message);}
+  };
+
+  const totalCredit = creditNotes.reduce((s,c)=>s+(c.total_credit||0),0);
+
+  return (<>
+    <div className="strip">
+      <div className="strip-item"><div className="strip-label">Total Credits</div><div className="strip-val">{fmtR(totalCredit)}</div></div>
+      <div className="strip-item"><div className="strip-label">Entries</div><div className="strip-val">{creditNotes.length}</div></div>
+      <div style={{marginLeft:"auto"}}>
+        <button className="btn btn-primary" onClick={()=>{setForm({...blank,date:today()});setShowForm(true);}}>+ Log Credit Note</button>
+      </div>
+    </div>
+    <div style={{fontSize:12,color:T.muted,marginBottom:10}}>
+      For when the wrong item was bought and has to go back to the supplier. This reduces stock (as
+      an issue) and records a credit against the supplier for Finance Dashboard to reconcile.
+    </div>
+    <div className="tbl-wrap"><table className="tbl">
+      <thead><tr><th>Date</th><th>Item</th><th className="num">Qty</th><th className="num">Credit R</th>
+        <th>Supplier</th><th>Reason</th><th>Credit note #</th><th>Slip</th><th></th></tr></thead>
+      <tbody>
+        {creditNotes.map(c=>(
+          <tr key={c.id}>
+            <td className="mono" style={{fontSize:11}}>{fromISO(c.date)}</td>
+            <td style={{fontWeight:600}}>{c.item_description}</td>
+            <td className="num warn">{fmtN(c.qty)}</td>
+            <td className="num">{fmtR(c.total_credit)}</td>
+            <td style={{fontSize:12,color:T.muted}}>{c.supplier}</td>
+            <td style={{fontSize:12,color:T.muted}}>{CREDIT_REASONS.find(r=>r.value===c.reason)?.label||c.reason}</td>
+            <td style={{fontSize:12,color:T.muted}}>{c.credit_note_number||"—"}</td>
+            <td>{c.slip_id && slips[c.slip_id] ? <ViewSlipLink storagePath={slips[c.slip_id].storage_path}/> : "—"}</td>
+            <td>{isAdmin&&<button className="btn btn-danger btn-sm" onClick={()=>remove(c)}>x</button>}</td>
+          </tr>
+        ))}
+        {creditNotes.length===0&&<tr><td colSpan={9} className="empty">No credit notes logged yet</td></tr>}
+      </tbody>
+    </table></div>
+    {showForm&&(
+      <div className="overlay" onClick={e=>e.target===e.currentTarget&&setShowForm(false)}>
+        <div className="modal">
+          <div className="modal-title">Log <span>Credit Note</span></div>
+          <div className="field"><label>Item</label>
+            <SearchableSelect
+              value={form.item_id}
+              onChange={v=>setForm(p=>({...p,item_id:v}))}
+              options={items.map(i=>({value:i.id,label:i.description}))}
+              placeholder="-- Select item --"
+            />
+          </div>
+          <div className="grid2">
+            <div className="field"><label>Date</label><DateField value={form.date} onChange={v=>setForm(p=>({...p,date:v}))}/></div>
+            <div className="field"><label>Qty returned</label><input type="number" value={form.qty} onChange={f("qty")}/></div>
+            <div className="field"><label>Unit cost (R excl VAT)</label><input type="number" step="0.01" value={form.unit_cost} onChange={f("unit_cost")}/></div>
+            <div className="field"><label>Supplier</label><input type="text" value={form.supplier} onChange={f("supplier")}/></div>
+          </div>
+          <div className="field"><label>Reason</label>
+            <select value={form.reason} onChange={f("reason")}>
+              {CREDIT_REASONS.map(r=><option key={r.value} value={r.value}>{r.label}</option>)}
+            </select>
+          </div>
+          <div className="field"><label>Credit note # (if known)</label><input type="text" value={form.credit_note_number} onChange={f("credit_note_number")}/></div>
+          {form.qty&&form.unit_cost&&(
+            <div className="info-box">
+              <span style={{fontSize:11,color:T.muted}}>Total credit</span>
+              <strong style={{fontFamily:"'Space Mono'",color:T.ok}}>{fmtR(totalCreditPreview)}</strong>
+            </div>
+          )}
+          <div className="field"><label>Notes</label><input type="text" value={form.notes} onChange={f("notes")}/></div>
+          <div className="field">
+            <label>Slip / credit note photo (optional)</label>
+            <input type="file" accept="image/*" capture="environment" onChange={pickSlipFile}/>
+            {form.pendingSlipName && <div style={{fontSize:11,color:T.ok,marginTop:4}}>Attached: {form.pendingSlipName}</div>}
+          </div>
+          <div style={{display:"flex",gap:9}}>
+            <button className="btn btn-primary" onClick={save}>Save Credit Note</button>
+            <button className="btn btn-ghost" onClick={()=>setShowForm(false)}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    )}
   </>);
 }
 
@@ -3501,6 +3664,7 @@ const PAGES=[
   {id:"projects",    label:"Projects",     section:"Schedule",   adminOnly:false},
   {id:"templates",   label:"Job Templates",section:"Schedule",   adminOnly:true},
   {id:"purchases",   label:"Purchases",    section:"Stock",      adminOnly:false},
+  {id:"credits",     label:"Credit Notes", section:"Stock",      adminOnly:true},
   {id:"issues",      label:"Issues",       section:"Stock",      adminOnly:false},
   {id:"count",       label:"Stock Count",  section:"Stock",      adminOnly:false},
   {id:"orders",      label:"Orders",       section:"Stock",      adminOnly:false},
@@ -3607,7 +3771,7 @@ function AuthenticatedApp() {
       const cf = `company_id=eq.${companyId}`;
       const[itemRows,purchRows,issueRows,countRows,destRows,jobRows,tplRows,jobMatRows,tplMatRows,slipRows,
             projectRows,workstreamRows,workstreamStatusRows,progressLogRows,progressMatRows,
-            hrEmployeeRows,hrScheduleLocationRows,hrLeaveRows]=await Promise.all([
+            hrEmployeeRows,hrScheduleLocationRows,hrLeaveRows,creditNoteRows]=await Promise.all([
         sb.select("maint_items", `active=eq.true&${cf}&order=sort_order.asc`),
         sb.select("maint_purchases", cf),
         sb.select("maint_issues", cf),
@@ -3626,6 +3790,7 @@ function AuthenticatedApp() {
         sb.select("hr_employees", `active=eq.true&${cf}`),
         sb.select("hr_schedule_locations", cf),
         sb.select("hr_leave", cf),
+        sb.select("supplier_credit_notes", `app=eq.maintenance&${cf}`),
       ]);
       const slipMap={}; (slipRows||[]).forEach(s=>{slipMap[s.id]=s;});
       setSlips(slipMap);
@@ -3641,6 +3806,7 @@ function AuthenticatedApp() {
         destinations:byLoc(destRows),
         jobs:byLoc(jobRows),
         templates:byLoc(tplRows.map(r=>({...r,recurrence_n:+r.recurrence_n}))),
+        creditNotes:byLoc(creditNoteRows.map(r=>({...r,qty:+r.qty,unit_cost:+r.unit_cost,total_credit:+r.total_credit}))),
       });
       setJobMaterials(jobMatRows.map(r=>({...r,qty_planned:+r.qty_planned,qty_used:r.qty_used==null?null:+r.qty_used})));
       setTemplateMaterials(tplMatRows.map(r=>({...r,qty:+r.qty})));
@@ -3679,6 +3845,7 @@ function AuthenticatedApp() {
   const setPurchases    = mkSetter("purchases");
   const setIssues       = mkSetter("issues");
   const setCounts       = mkSetter("counts");
+  const setCreditNotes  = mkSetter("creditNotes");
   const setJobs         = mkSetter("jobs");
   const setTemplates    = mkSetter("templates");
   // Destinations setter needs to update across all locs since Destinations component gets all of them
@@ -3738,6 +3905,7 @@ function AuthenticatedApp() {
   const allDests     = Object.values(allData.destinations).flat();
   const jobs         = allData.jobs[locId]      ||[];
   const templates    = allData.templates[locId] ||[];
+  const creditNotes  = allData.creditNotes[locId]||[];
 
   const visiblePages = PAGES.filter(p=>isAdmin||!p.adminOnly);
   const sections     = [...new Set(visiblePages.map(p=>p.section))];
@@ -3864,6 +4032,7 @@ function AuthenticatedApp() {
         <div className="section">
           {page==="dashboard"    && <Dashboard items={items} purchases={purchases} issues={issues} counts={counts}/>}
           {page==="purchases"    && <Purchases locId={locId} items={items} purchases={purchases} setPurchases={setPurchases} isAdmin={isAdmin} companyId={companyId} slips={slips} onSlipAttached={onSlipAttached}/>}
+          {page==="credits"      && <CreditNotes locId={locId} items={items} creditNotes={creditNotes} setCreditNotes={setCreditNotes} setIssues={setIssues} isAdmin={isAdmin} companyId={companyId} slips={slips} onSlipAttached={onSlipAttached}/>}
           {page==="issues"       && <Issues locId={locId} items={items} issues={issues} setIssues={setIssues}
                                        destinations={destinations} purchases={purchases} jobs={jobs} isAdmin={isAdmin} companyId={companyId}/>}
           {page==="count"        && <StockCount locId={locId} items={items} purchases={purchases} issues={issues} counts={counts} setCounts={setCounts} companyId={companyId}/>}
