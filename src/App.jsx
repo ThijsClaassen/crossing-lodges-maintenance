@@ -1779,7 +1779,7 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
 
     {showAdHoc && (
       <AdHocJob locId={locId} items={items} destinations={destinations}
-        setJobs={setJobs} setJobMaterials={setJobMaterials} onClose={()=>setShowAdHoc(false)} companyId={companyId}/>
+        setJobs={setJobs} setJobMaterials={setJobMaterials} onClose={()=>setShowAdHoc(false)} companyId={companyId} hrEmployees={hrEmployees}/>
     )}
   </>);
 }
@@ -1820,7 +1820,7 @@ function JobDetail({ job, onClose, locId, jobs, jobMaterials, items, purchases, 
 
   if(editing) return (
     <EditJob job={job} mats={mats} items={items} destinations={destinations}
-      setJobs={setJobs} setJobMaterials={setJobMaterials}
+      setJobs={setJobs} setJobMaterials={setJobMaterials} hrEmployees={hrEmployees}
       onDone={()=>{setEditing(false);onClose();}} onBack={()=>setEditing(false)} companyId={companyId}/>
   );
 
@@ -2176,7 +2176,7 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates, hr
 }
 
 // ─── AD-HOC JOB ──────────────────────────────────────────────────────────────
-function AdHocJob({ locId, items, destinations, setJobs, setJobMaterials, onClose, companyId }) {
+function AdHocJob({ locId, items, destinations, setJobs, setJobMaterials, onClose, companyId, hrEmployees }) {
   const locDests = destinations.filter(d=>d.location_id===locId).sort((a,b)=>a.sort_order-b.sort_order);
   const blank = {name:"",description:"",job_type:"reactive",destination_id:"",assigned_to:"",due_date:today()};
   const [form,setForm] = useState(blank);
@@ -2235,7 +2235,7 @@ function AdHocJob({ locId, items, destinations, setJobs, setJobMaterials, onClos
             </select>
           </div>
           <div className="field"><label>Assigned To</label>
-            <input type="text" value={form.assigned_to} onChange={f("assigned_to")} placeholder="Name"/>
+            <AssignedToField hrEmployees={hrEmployees} value={form.assigned_to} onChange={v=>setForm(p=>({...p,assigned_to:v}))}/>
           </div>
         </div>
         <div className="field"><label>Description</label>
@@ -2257,7 +2257,7 @@ function AdHocJob({ locId, items, destinations, setJobs, setJobMaterials, onClos
 // Edits an existing scheduled job instance -- its own date/details/materials,
 // not the recurring template it may have come from. Only available while the
 // job is still scheduled/in_progress; completed jobs are historical record.
-function EditJob({ job, mats, items, destinations, setJobs, setJobMaterials, onDone, onBack, companyId }) {
+function EditJob({ job, mats, items, destinations, setJobs, setJobMaterials, onDone, onBack, companyId, hrEmployees }) {
   const locDests = destinations.filter(d=>d.location_id===job.location_id).sort((a,b)=>a.sort_order-b.sort_order);
   const [form,setForm] = useState({
     name:job.name, description:job.description||"", job_type:job.job_type||"preventive",
@@ -2328,7 +2328,7 @@ function EditJob({ job, mats, items, destinations, setJobs, setJobMaterials, onD
             </select>
           </div>
           <div className="field"><label>Assigned To</label>
-            <input type="text" value={form.assigned_to} onChange={f("assigned_to")} placeholder="Name"/>
+            <AssignedToField hrEmployees={hrEmployees} value={form.assigned_to} onChange={v=>setForm(p=>({...p,assigned_to:v}))}/>
           </div>
         </div>
         <div className="field"><label>Description</label>
@@ -2342,6 +2342,99 @@ function EditJob({ job, mats, items, destinations, setJobs, setJobMaterials, onD
           <button className="btn btn-ghost" onClick={onBack} disabled={busy}>Cancel</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── ASSIGNED TO (shared) ─────────────────────────────────────────────────────
+// A dropdown of active Maintenance-department staff (2026-08-25), same
+// cross-app hr_employees read/filter as CompleteJob's labor tick-list and
+// the Projects AI Suggestions panel — reused here rather than duplicated.
+// Job Card's assigned_to column stays plain text (no FK, no migration), so
+// this writes the picked name straight into it; "Other…" reveals a text
+// input for a name not on the Maintenance staff list (a contractor, a
+// manager filling in, etc.) so nothing that worked before is lost.
+function maintenanceStaffNames(hrEmployees) {
+  return (hrEmployees||[])
+    .filter(e=>e.active && normalizeDepartment(e.department)==="Maintenance")
+    .map(e=>`${e.first_name||""} ${e.last_name||""}`.trim()||"(unnamed)")
+    .sort((a,b)=>a.localeCompare(b));
+}
+
+function AssignedToField({ hrEmployees, value, onChange }) {
+  const names = useMemo(()=>maintenanceStaffNames(hrEmployees),[hrEmployees]);
+  const [showOther, setShowOther] = useState(()=>!!value && !names.includes(value));
+
+  return (<>
+    <select value={showOther?"__other__":(value||"")} onChange={e=>{
+      if(e.target.value==="__other__"){ setShowOther(true); onChange(""); }
+      else { setShowOther(false); onChange(e.target.value); }
+    }}>
+      <option value="">-- Unassigned --</option>
+      {names.map(n=><option key={n} value={n}>{n}</option>)}
+      <option value="__other__">Other…</option>
+    </select>
+    {showOther && (
+      <input type="text" value={value} onChange={e=>onChange(e.target.value)}
+        placeholder="Name" style={{marginTop:6}}/>
+    )}
+  </>);
+}
+
+// ─── CREW PICKER (shared) ─────────────────────────────────────────────────────
+// Who's on the crew for a workstream's weekly progress log (2026-08-25) —
+// replaces the old plain "Crew Size" number with real people: tick-list of
+// active Maintenance-department staff (same hr_employees source as
+// AssignedToField/CompleteJob) plus free-text "casual worker" entries for
+// temp labor brought in when short-handed, which was the whole point of
+// this ask. crew_size is auto-computed as the count of both put together,
+// so project_workstream_status's rate/suggestion math keeps working
+// unchanged — it just gets a real headcount instead of a typed guess.
+function useMaintenanceStaffList(hrEmployees) {
+  return useMemo(()=>
+    (hrEmployees||[])
+      .filter(e=>e.active && normalizeDepartment(e.department)==="Maintenance")
+      .map(e=>({id:e.id, name:`${e.first_name||""} ${e.last_name||""}`.trim()||"(unnamed)"}))
+      .sort((a,b)=>a.name.localeCompare(b.name))
+  ,[hrEmployees]);
+}
+
+function CrewPicker({ hrEmployees, ticked, setTicked, casuals, setCasuals }) {
+  const staff = useMaintenanceStaffList(hrEmployees);
+  const toggle = id => setTicked(t=>({...t, [id]: !t[id]}));
+  const addCasual    = ()=>setCasuals(c=>[...c,""]);
+  const updCasual    = (i,v)=>setCasuals(c=>c.map((x,j)=>j===i?v:x));
+  const removeCasual = i=>setCasuals(c=>c.filter((_,j)=>j!==i));
+  const count = staff.filter(s=>ticked[s.id]).length + casuals.filter(c=>c.trim()).length;
+
+  return (
+    <div style={{marginBottom:14}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+        <div className="section-title" style={{margin:0}}>Crew ({count})</div>
+        <button className="btn btn-ghost btn-sm" onClick={addCasual}>+ Add Casual Worker</button>
+      </div>
+      {staff.length===0 && (
+        <div style={{fontSize:11,color:T.muted,marginBottom:8}}>No active Maintenance-department staff on file.</div>
+      )}
+      {staff.length>0 && (
+        <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:casuals.length?10:0}}>
+          {staff.map(s=>(
+            <label key={s.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:12,
+              background:"rgba(0,0,0,.25)",border:`1px solid ${T.border}`,borderRadius:6,padding:"6px 10px",cursor:"pointer"}}>
+              <input type="checkbox" checked={!!ticked[s.id]} onChange={()=>toggle(s.id)}/>
+              {s.name}
+            </label>
+          ))}
+        </div>
+      )}
+      {casuals.map((c,i)=>(
+        <div key={i} style={{display:"flex",gap:7,marginBottom:7,alignItems:"center"}}>
+          <input type="text" value={c} onChange={e=>updCasual(i,e.target.value)}
+            placeholder="Casual worker name" style={{flex:1}}/>
+          <span className="badge badge-neu" style={{fontSize:10}}>Casual</span>
+          <button className="btn btn-danger btn-sm" onClick={()=>removeCasual(i)}>x</button>
+        </div>
+      ))}
     </div>
   );
 }
@@ -2399,7 +2492,7 @@ function MaterialPicker({ items, rows, setRows }) {
 
 // ─── JOB TEMPLATES (Admin) ───────────────────────────────────────────────────
 function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTemplateMaterials,
-                        items, destinations, jobs, setJobs, jobMaterials, setJobMaterials, companyId }) {
+                        items, destinations, jobs, setJobs, jobMaterials, setJobMaterials, companyId, hrEmployees }) {
   const locDests = destinations.filter(d=>d.location_id===locId).sort((a,b)=>a.sort_order-b.sort_order);
   const [showForm,setShowForm] = useState(false);
   const [editId,setEditId]     = useState(null);
@@ -2560,7 +2653,7 @@ function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTe
               <DateField value={form.next_due} onChange={v=>setForm(p=>({...p,next_due:v}))}/>
             </div>
             <div className="field"><label>Assigned To</label>
-              <input type="text" value={form.assigned_to} onChange={f("assigned_to")} placeholder="Name"/>
+              <AssignedToField hrEmployees={hrEmployees} value={form.assigned_to} onChange={v=>setForm(p=>({...p,assigned_to:v}))}/>
             </div>
           </div>
           <div className="field"><label>Description</label>
@@ -2917,7 +3010,7 @@ function statusBadgeLabel(s) {
 }
 
 function ProjectsPage({ locId, projects, workstreams, workstreamStatus, progressLogs,
-                         progressMaterials, setProgressMaterials,
+                         progressMaterials, setProgressMaterials, progressCrew, setProgressCrew,
                          setProjects, setWorkstreams, setProgressLogs, refreshWorkstreamStatus,
                          hrEmployees, hrScheduleLocations, hrLeave, itemsByLoc, isAdmin, companyId }) {
   const [locFilter, setLocFilter] = useState("all");
@@ -2943,6 +3036,7 @@ function ProjectsPage({ locId, projects, workstreams, workstreamStatus, progress
       <ProjectDetail project={openProject} workstreams={wsByProject[openProject.id]||[]}
         statusByWsId={statusByWsId} progressLogs={progressLogs}
         progressMaterials={progressMaterials} setProgressMaterials={setProgressMaterials}
+        progressCrew={progressCrew} setProgressCrew={setProgressCrew}
         setWorkstreams={setWorkstreams} setProgressLogs={setProgressLogs}
         setProjects={setProjects} refreshWorkstreamStatus={refreshWorkstreamStatus}
         hrEmployees={hrEmployees} hrScheduleLocations={hrScheduleLocations} hrLeave={hrLeave}
@@ -3076,6 +3170,7 @@ function NewProjectForm({ locId, companyId, setProjects, onClose }) {
 }
 
 function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, progressMaterials, setProgressMaterials,
+                          progressCrew, setProgressCrew,
                           setWorkstreams, setProgressLogs, setProjects, refreshWorkstreamStatus,
                           hrEmployees, hrScheduleLocations, hrLeave, items, isAdmin, companyId, onBack }) {
   const [logFor, setLogFor] = useState(null);
@@ -3179,8 +3274,8 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, progr
       hrEmployees={hrEmployees} hrScheduleLocations={hrScheduleLocations} hrLeave={hrLeave}/>
 
     {logFor && (
-      <WeeklyLogForm workstream={logFor} project={project} items={items} companyId={companyId}
-        setProgressLogs={setProgressLogs} setProgressMaterials={setProgressMaterials}
+      <WeeklyLogForm workstream={logFor} project={project} items={items} companyId={companyId} hrEmployees={hrEmployees}
+        setProgressLogs={setProgressLogs} setProgressMaterials={setProgressMaterials} setProgressCrew={setProgressCrew}
         refreshWorkstreamStatus={refreshWorkstreamStatus}
         onClose={()=>setLogFor(null)}/>
     )}
@@ -3196,7 +3291,7 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, progr
     )}
     {historyFor && (
       <WorkstreamLogHistory workstream={historyFor} progressLogs={progressLogs} setProgressLogs={setProgressLogs}
-        progressMaterials={progressMaterials} items={items}
+        progressMaterials={progressMaterials} progressCrew={progressCrew} items={items}
         refreshWorkstreamStatus={refreshWorkstreamStatus} isAdmin={isAdmin}
         onClose={()=>setHistoryFor(null)}/>
     )}
@@ -3304,12 +3399,19 @@ function WorkstreamSuggestions({ project, workstreams, statusByWsId, hrEmployees
 // per entry — lets Thijs correct or remove data his employees logged
 // (e.g. a mistaken week or a test entry), which the "+ Log" flow itself
 // deliberately doesn't expose since it's meant to stay a quick weekly form.
-function WorkstreamLogHistory({ workstream, progressLogs, setProgressLogs, progressMaterials, items, refreshWorkstreamStatus, isAdmin, onClose }) {
+function WorkstreamLogHistory({ workstream, progressLogs, setProgressLogs, progressMaterials, progressCrew, items, refreshWorkstreamStatus, isAdmin, onClose }) {
   const [editLog, setEditLog] = useState(null);
   const logs = progressLogs.filter(l=>l.workstream_id===workstream.id).sort((a,b)=>b.week_ending.localeCompare(a.week_ending));
   const materialsFor = logId => (progressMaterials||[])
     .filter(m=>m.progress_log_id===logId)
     .map(m=>{ const it=(items||[]).find(i=>i.id===m.item_id); return `${it?it.description:"?"} ×${fmtN(m.qty)}`; })
+    .join(", ");
+  // Crew names (2026-08-25) — shown as a hover tooltip on the count so the
+  // table stays compact; falls back to the plain number for logs recorded
+  // before this existed (or with no crew rows, e.g. a log with no pick made).
+  const crewFor = logId => (progressCrew||[])
+    .filter(c=>c.progress_log_id===logId)
+    .map(c=>c.is_casual?`${c.worker_name} (casual)`:c.worker_name)
     .join(", ");
 
   const remove = async (log) => {
@@ -3332,7 +3434,7 @@ function WorkstreamLogHistory({ workstream, progressLogs, setProgressLogs, progr
             {logs.map(l=>(
               <tr key={l.id}>
                 <td className="mono" style={{fontSize:11}}>{l.week_ending}</td>
-                <td className="num" style={{color:T.muted}}>{l.crew_size==null?"—":l.crew_size}</td>
+                <td className="num" style={{color:T.muted}} title={crewFor(l.id)||undefined}>{l.crew_size==null?"—":l.crew_size}</td>
                 <td className="num">{fmtQty(l.qty_done, workstream.unit)}</td>
                 <td className="num" style={{color:T.muted}}>{l.cost_incurred==null?"—":fmtR(l.cost_incurred)}</td>
                 <td style={{fontSize:12,color:T.muted}}>{materialsFor(l.id)||"—"}</td>
@@ -3411,11 +3513,19 @@ function EditLogForm({ log, workstream, setProgressLogs, refreshWorkstreamStatus
   );
 }
 
-function WeeklyLogForm({ workstream, project, items, companyId, setProgressLogs, setProgressMaterials, refreshWorkstreamStatus, onClose }) {
+function WeeklyLogForm({ workstream, project, items, companyId, hrEmployees, setProgressLogs, setProgressCrew, setProgressMaterials, refreshWorkstreamStatus, onClose }) {
   const isoToday = new Date().toISOString().slice(0,10);
-  const [form, setForm] = useState({week_ending:isoToday, crew_size:"", qty_done:"", cost_incurred:"", notes:""});
+  const [form, setForm] = useState({week_ending:isoToday, qty_done:"", cost_incurred:"", notes:""});
   const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
   const [saving, setSaving] = useState(false);
+
+  const staff = useMaintenanceStaffList(hrEmployees);
+  const [ticked, setTicked]   = useState({}); // employee_id -> true
+  const [casuals, setCasuals] = useState([]); // ["name", ...]
+  const crewList = [
+    ...staff.filter(s=>ticked[s.id]).map(s=>({employee_id:s.id, worker_name:s.name, is_casual:false})),
+    ...casuals.filter(c=>c.trim()).map(c=>({employee_id:null, worker_name:c.trim(), is_casual:true})),
+  ];
 
   // Materials from stock (2026-08-25) — same idea as a job card's Materials
   // Used section: pick items + qty here, and this issues the stock exactly
@@ -3432,13 +3542,25 @@ function WeeklyLogForm({ workstream, project, items, companyId, setProgressLogs,
     try {
       const row = {
         id: uid(), company_id: companyId, workstream_id: workstream.id, week_ending: form.week_ending,
-        crew_size: form.crew_size===""?null:parseInt(form.crew_size,10),
+        crew_size: crewList.length || null,
         qty_done: parseFloat(form.qty_done)||0,
         cost_incurred: form.cost_incurred===""?null:parseFloat(form.cost_incurred),
         notes: form.notes.trim()||null,
       };
       const ins = await sb.insert("project_progress_logs", row);
       setProgressLogs(p=>[...p, ins]);
+
+      // Who was on the crew this week (2026-08-25) — HR staff ticked above
+      // plus any casual/temp workers, each its own row so a later per-
+      // person labor-cost report has real names, not just a count.
+      const newCrew = [];
+      for(const c of crewList){
+        const crewRow = { id: uid(), progress_log_id: ins.id, employee_id: c.employee_id,
+          worker_name: c.worker_name, is_casual: c.is_casual, company_id: companyId };
+        await sb.insert("project_progress_crew", crewRow);
+        newCrew.push(crewRow);
+      }
+      if(newCrew.length) setProgressCrew(p=>[...p, ...newCrew]);
 
       // Issue stock for each material used, same as a job's Materials Used —
       // and keep a project_progress_materials row so the workstream's own
@@ -3469,10 +3591,10 @@ function WeeklyLogForm({ workstream, project, items, companyId, setProgressLogs,
     <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div className="modal">
         <div className="modal-title">Progress Log <span>{workstream.name}</span></div>
-        <div className="grid2">
-          <div className="field"><label>Date</label><input type="date" value={form.week_ending} onChange={f("week_ending")}/></div>
-          <div className="field"><label>Crew Size</label><input type="number" value={form.crew_size} onChange={f("crew_size")}/></div>
-        </div>
+        <div className="field"><label>Date</label><input type="date" value={form.week_ending} onChange={f("week_ending")}/></div>
+
+        <CrewPicker hrEmployees={hrEmployees} ticked={ticked} setTicked={setTicked} casuals={casuals} setCasuals={setCasuals}/>
+
         <div className="grid2">
           <div className="field"><label>Qty Done ({WORKSTREAM_UNIT_LABEL[workstream.unit]})</label>
             <input type="number" step="0.01" value={form.qty_done} onChange={f("qty_done")}/></div>
@@ -3751,6 +3873,10 @@ function AuthenticatedApp() {
   // Materials pulled from stock against a progress log (2026-08-25) — same
   // company-wide, joined-by-id reasoning as progressLogs itself.
   const [progressMaterials,setProgressMaterials] = useState([]);
+  // Who was on a workstream's crew for a given weekly log (2026-08-25) —
+  // same joined-by-id reasoning, replaces the old plain crew_size number
+  // with real HR staff + casual/temp worker names.
+  const [progressCrew,     setProgressCrew]      = useState([]);
   // Cross-app read (2026-08-19) — HR/Linen's staff/schedule/leave tables,
   // same shared Supabase project, used only by the Projects AI Suggestions
   // panel to gauge maintenance-staff availability per lodge. See
@@ -3776,7 +3902,7 @@ function AuthenticatedApp() {
     try{
       const cf = `company_id=eq.${companyId}`;
       const[itemRows,purchRows,issueRows,countRows,destRows,jobRows,tplRows,jobMatRows,tplMatRows,slipRows,
-            projectRows,workstreamRows,workstreamStatusRows,progressLogRows,progressMatRows,
+            projectRows,workstreamRows,workstreamStatusRows,progressLogRows,progressMatRows,progressCrewRows,
             hrEmployeeRows,hrScheduleLocationRows,hrLeaveRows,creditNoteRows]=await Promise.all([
         sb.select("maint_items", `active=eq.true&${cf}&order=sort_order.asc`),
         sb.select("maint_purchases", cf),
@@ -3793,6 +3919,7 @@ function AuthenticatedApp() {
         sb.select("project_workstream_status", cf),
         sb.select("project_progress_logs", cf),
         sb.select("project_progress_materials", cf),
+        sb.select("project_progress_crew", cf),
         sb.select("hr_employees", `active=eq.true&${cf}`),
         sb.select("hr_schedule_locations", cf),
         sb.select("hr_leave", cf),
@@ -3821,6 +3948,7 @@ function AuthenticatedApp() {
       setWorkstreamStatus(workstreamStatusRows);
       setProgressLogs(progressLogRows.map(r=>({...r,crew_size:r.crew_size==null?null:+r.crew_size,qty_done:+r.qty_done,cost_incurred:r.cost_incurred==null?null:+r.cost_incurred})));
       setProgressMaterials(progressMatRows.map(r=>({...r,qty:+r.qty})));
+      setProgressCrew(progressCrewRows);
       setHrEmployees(hrEmployeeRows);
       setHrScheduleLocations(hrScheduleLocationRows);
       setHrLeave(hrLeaveRows);
@@ -4054,6 +4182,7 @@ function AuthenticatedApp() {
           {page==="projects"     && <ProjectsPage locId={locId} projects={projects} workstreams={workstreams}
                                        workstreamStatus={workstreamStatus} progressLogs={progressLogs}
                                        progressMaterials={progressMaterials} setProgressMaterials={setProgressMaterials}
+                                       progressCrew={progressCrew} setProgressCrew={setProgressCrew}
                                        setProjects={setProjects} setWorkstreams={setWorkstreams} setProgressLogs={setProgressLogs}
                                        refreshWorkstreamStatus={refreshWorkstreamStatus}
                                        hrEmployees={hrEmployees} hrScheduleLocations={hrScheduleLocations} hrLeave={hrLeave}
@@ -4062,7 +4191,7 @@ function AuthenticatedApp() {
           {page==="templates"    && isAdmin && <JobTemplates locId={locId} templates={templates} setTemplates={setTemplates}
                                        templateMaterials={templateMaterials} setTemplateMaterials={setTemplateMaterials}
                                        items={items} destinations={allDests} jobs={jobs} setJobs={setJobs}
-                                       jobMaterials={jobMaterials} setJobMaterials={setJobMaterials} companyId={companyId}/>}
+                                       jobMaterials={jobMaterials} setJobMaterials={setJobMaterials} companyId={companyId} hrEmployees={hrEmployees}/>}
           {page==="items"        && isAdmin && <StockItems locId={locId} items={items} setItems={setItems} companyId={companyId}/>}
           {page==="destinations" && isAdmin && <Destinations locId={locId} destinations={allDests} setDestinations={setDestinations} companyId={companyId}/>}
         </div>
