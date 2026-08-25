@@ -7,7 +7,7 @@ import Login from "./Login.jsx";
 import SetPassword from "./SetPassword.jsx";
 import { CompanyProvider, useCompany } from "./CompanyContext.jsx";
 import { uploadPurchaseSlip, getSlipUrl } from "./slipUpload.js";
-import { availableMaintenanceStaff } from "./maintenanceStaffEngine.js";
+import { availableMaintenanceStaff, normalizeDepartment } from "./maintenanceStaffEngine.js";
 import { listMembers as listBillingMembers, logMemberPurchase, listPendingCharges, addPendingCharges, billPendingCharges, deletePendingCharge } from "./memberPurchase.js";
 
 const fmtR  = n=>`R ${Number(n||0).toLocaleString("en-ZA",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
@@ -1355,7 +1355,7 @@ function buildForecast({ jobs, jobMaterials, templates, templateMaterials, items
 // ─── CALENDAR ────────────────────────────────────────────────────────────────
 function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destinations,
                     templates, setJobs, setJobMaterials, setIssues, setTemplates, isAdmin, companyId,
-                    projects, workstreamStatus, progressLogs, workstreams }) {
+                    projects, workstreamStatus, progressLogs, workstreams, hrEmployees }) {
   const [cursor, setCursor]     = useState(()=>{ const d=new Date(); return new Date(d.getFullYear(),d.getMonth(),1); });
   const [view, setView]         = useState("month");   // month | list
   const [openJob, setOpenJob]   = useState(null);
@@ -1604,7 +1604,7 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
         locId={locId} jobs={jobs} jobMaterials={jobMaterials} items={items}
         purchases={purchases} issues={issues} templates={templates} destinations={destinations}
         setJobs={setJobs} setJobMaterials={setJobMaterials} setIssues={setIssues}
-        setTemplates={setTemplates} isAdmin={isAdmin} companyId={companyId}/>
+        setTemplates={setTemplates} isAdmin={isAdmin} companyId={companyId} hrEmployees={hrEmployees}/>
     )}
 
     {showAdHoc && (
@@ -1616,7 +1616,7 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
 
 // ─── JOB DETAIL ──────────────────────────────────────────────────────────────
 function JobDetail({ job, onClose, locId, jobs, jobMaterials, items, purchases, issues,
-                     templates, destinations, setJobs, setJobMaterials, setIssues, setTemplates, isAdmin, companyId }) {
+                     templates, destinations, setJobs, setJobMaterials, setIssues, setTemplates, isAdmin, companyId, hrEmployees }) {
   const [completing, setCompleting] = useState(false);
   const [editing, setEditing] = useState(false);
   const mats = jobMaterials.filter(m=>m.job_id===job.id);
@@ -1643,7 +1643,7 @@ function JobDetail({ job, onClose, locId, jobs, jobMaterials, items, purchases, 
 
   if(completing) return (
     <CompleteJob job={job} mats={mats} items={items} purchases={purchases} issues={issues}
-      locId={locId} templates={templates}
+      locId={locId} templates={templates} hrEmployees={hrEmployees}
       setJobs={setJobs} setJobMaterials={setJobMaterials} setIssues={setIssues} setTemplates={setTemplates}
       onDone={()=>{setCompleting(false);onClose();}} onBack={()=>setCompleting(false)} companyId={companyId}/>
   );
@@ -1732,7 +1732,7 @@ function JobDetail({ job, onClose, locId, jobs, jobMaterials, items, purchases, 
 }
 
 // ─── COMPLETE JOB ────────────────────────────────────────────────────────────
-function CompleteJob({ job, mats, items, purchases, issues, locId, templates,
+function CompleteJob({ job, mats, items, purchases, issues, locId, templates, hrEmployees,
                        setJobs, setJobMaterials, setIssues, setTemplates, onDone, onBack, companyId }) {
   const [date, setDate]   = useState(today());
   const [notes, setNotes] = useState("");
@@ -1743,14 +1743,42 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates,
   const [odometer, setOdometer] = useState("");
   const [busy, setBusy]   = useState(false);
 
+  // Who worked this job + hours (2026-08-25) — a tick-list of active
+  // Maintenance-department staff (cross-app read of hr_employees, same
+  // source as the Projects AI Suggestions panel), not gated to the job's
+  // lodge or this week's rotation — deliberately broader, since limiting to
+  // "on duty here today" risks silently hiding whoever actually helped.
+  // Required before a job can be marked complete, so this data is reliably
+  // captured from day one for later payroll/labor-cost reporting.
+  const maintenanceStaff = useMemo(()=>
+    (hrEmployees||[])
+      .filter(e=>e.active && normalizeDepartment(e.department)==="Maintenance")
+      .map(e=>({id:e.id, name:`${e.first_name||""} ${e.last_name||""}`.trim()||"(unnamed)"}))
+      .sort((a,b)=>a.name.localeCompare(b.name))
+  ,[hrEmployees]);
+  const [ticked, setTicked]   = useState({}); // employee_id -> true
+  const [hours, setHours]     = useState({}); // employee_id -> hours string
+  const toggleStaff = id => setTicked(t=>({...t, [id]: !t[id]}));
+  const laborRows = maintenanceStaff.filter(e=>ticked[e.id] && parseFloat(hours[e.id])>0);
+
   const plannedIds = new Set(mats.map(m=>m.item_id));
   const addExtra    = ()=>setExtras(r=>[...r,{item_id:"",qty:""}]);
   const updExtra     = (i,k,v)=>setExtras(r=>r.map((x,j)=>j===i?{...x,[k]:v}:x));
   const removeExtra  = i=>setExtras(r=>r.filter((_,j)=>j!==i));
 
   const save = async () => {
+    if(laborRows.length===0){
+      alert("Tick at least one employee who worked this job and enter their hours before completing it.");
+      return;
+    }
     setBusy(true);
     try{
+      // 0. Log who worked it + how many hours each
+      const laborInserts = laborRows.map(e=>({
+        id: uid(), job_id: job.id, employee_id: e.id, employee_name: e.name,
+        hours: parseFloat(hours[e.id]), company_id: companyId,
+      }));
+      for(const row of laborInserts) await sb.insert("maint_job_labor", row);
       // 1. Write a stock issue for each planned material actually used
       const newIssues = [];
       for(const m of mats){
@@ -1924,6 +1952,31 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates,
                 <input className="count-input" type="number" placeholder="Qty" value={ex.qty}
                   onChange={e=>updExtra(i,"qty",e.target.value)}/>
                 <button className="btn btn-danger btn-sm" onClick={()=>removeExtra(i)}>x</button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="section-title">Who Worked This Job</div>
+        <div style={{fontSize:11,color:T.muted,marginBottom:10,lineHeight:1.5}}>
+          Tick everyone who worked on it and enter their hours — required before the job can be marked complete.
+        </div>
+        {maintenanceStaff.length===0 && (
+          <div style={{fontSize:11,color:T.muted,marginBottom:14}}>
+            No active Maintenance-department staff found. Add them in HR/Linen first.
+          </div>
+        )}
+        {maintenanceStaff.length>0 && (
+          <div style={{marginBottom:14}}>
+            {maintenanceStaff.map(e=>(
+              <div key={e.id} style={{display:"flex",gap:9,alignItems:"center",marginBottom:7}}>
+                <label style={{display:"flex",gap:8,alignItems:"center",cursor:"pointer",flex:1}}>
+                  <input type="checkbox" checked={!!ticked[e.id]} onChange={()=>toggleStaff(e.id)}/>
+                  <span style={{fontSize:13,color:T.cream}}>{e.name}</span>
+                </label>
+                <input className="count-input" type="number" step="0.5" placeholder="Hours"
+                  disabled={!ticked[e.id]} value={hours[e.id]||""}
+                  onChange={ev=>setHours(h=>({...h,[e.id]:ev.target.value}))}/>
               </div>
             ))}
           </div>
@@ -2647,6 +2700,31 @@ function DestinationCosts({ destinations, issues, items, purchases, jobs }) {
 const PROJECT_STATUS_LABEL = { planning:"Planning", active:"Active", complete:"Complete" };
 const WORKSTREAM_UNIT_LABEL = { km:"km", m:"m", percent:"%" };
 
+// Days vs weeks for a workstream's "Your Estimate" (2026-08-25) — the
+// underlying column (estimate_weeks) and everything project_workstream_status
+// computes from it (actual/needed rate, projected finish date) NEVER
+// changes shape or unit; these two helpers just convert what a person
+// types/sees in the New/Edit Workstream forms, so a 2-3 day project doesn't
+// have to be entered as "0.4 weeks". estimate_unit only remembers which
+// unit the number was originally typed in.
+function estimateWeeksFromInput(value, unit) {
+  const n = parseFloat(value);
+  if (!(n > 0)) return null;
+  return unit === "days" ? n / 7 : n;
+}
+function estimateInputFromWeeks(weeks, unit) {
+  if (weeks == null) return "";
+  const n = unit === "days" ? weeks * 7 : weeks;
+  return String(Math.round(n * 100) / 100);
+}
+// Display-only conversion of a per-week rate (what project_workstream_status
+// always returns) into "/day" for a workstream whose estimate was entered
+// in days — the view's own numbers never change, only how they're shown.
+function fmtRatePerWeek(perWeek, unit) {
+  if (perWeek == null) return "—";
+  return unit === "days" ? `${fmtN(perWeek/7)} /day` : `${fmtN(perWeek)} /wk`;
+}
+
 function daysUntil(iso) {
   if (!iso) return null;
   const d = new Date(iso + "T00:00:00");
@@ -2669,8 +2747,9 @@ function statusBadgeLabel(s) {
 }
 
 function ProjectsPage({ locId, projects, workstreams, workstreamStatus, progressLogs,
+                         progressMaterials, setProgressMaterials,
                          setProjects, setWorkstreams, setProgressLogs, refreshWorkstreamStatus,
-                         hrEmployees, hrScheduleLocations, hrLeave, isAdmin, companyId }) {
+                         hrEmployees, hrScheduleLocations, hrLeave, itemsByLoc, isAdmin, companyId }) {
   const [locFilter, setLocFilter] = useState("all");
   const [openProjectId, setOpenProjectId] = useState(null);
   const [showNewProject, setShowNewProject] = useState(false);
@@ -2693,9 +2772,11 @@ function ProjectsPage({ locId, projects, workstreams, workstreamStatus, progress
     return (
       <ProjectDetail project={openProject} workstreams={wsByProject[openProject.id]||[]}
         statusByWsId={statusByWsId} progressLogs={progressLogs}
+        progressMaterials={progressMaterials} setProgressMaterials={setProgressMaterials}
         setWorkstreams={setWorkstreams} setProgressLogs={setProgressLogs}
         setProjects={setProjects} refreshWorkstreamStatus={refreshWorkstreamStatus}
         hrEmployees={hrEmployees} hrScheduleLocations={hrScheduleLocations} hrLeave={hrLeave}
+        items={itemsByLoc[openProject.location_id]||[]}
         isAdmin={isAdmin} companyId={companyId}
         onBack={()=>setOpenProjectId(null)}/>
     );
@@ -2824,8 +2905,9 @@ function NewProjectForm({ locId, companyId, setProjects, onClose }) {
   );
 }
 
-function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, setWorkstreams, setProgressLogs, setProjects, refreshWorkstreamStatus,
-                          hrEmployees, hrScheduleLocations, hrLeave, isAdmin, companyId, onBack }) {
+function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, progressMaterials, setProgressMaterials,
+                          setWorkstreams, setProgressLogs, setProjects, refreshWorkstreamStatus,
+                          hrEmployees, hrScheduleLocations, hrLeave, items, isAdmin, companyId, onBack }) {
   const [logFor, setLogFor] = useState(null);
   const [editWs, setEditWs] = useState(null);
   const [showNewWs, setShowNewWs] = useState(false);
@@ -2900,8 +2982,8 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, setWo
               <td className="num">{fmtQty(s?.cumulative_done ?? w.baseline_qty, w.unit)}</td>
               <td className="num">{fmtQty(s?.remaining ?? (w.target_qty-w.baseline_qty), w.unit)}</td>
               <td className="num" style={{color:T.muted}}>{crew==null?"—":crew}</td>
-              <td className="num" style={{color:T.muted}}>{s?.actual_rate_per_week!=null?`${fmtN(s.actual_rate_per_week)} /wk`:"—"}</td>
-              <td className="num" style={{color:T.muted}}>{s?.rate_needed_per_week!=null?`${fmtN(s.rate_needed_per_week)} /wk`:"—"}</td>
+              <td className="num" style={{color:T.muted}}>{fmtRatePerWeek(s?.actual_rate_per_week, w.estimate_unit)}</td>
+              <td className="num" style={{color:T.muted}}>{fmtRatePerWeek(s?.rate_needed_per_week, w.estimate_unit)}</td>
               <td>
                 <span className="badge" style={{background:`${statusBadgeColor(s?.status)}22`,color:statusBadgeColor(s?.status),border:`1px solid ${statusBadgeColor(s?.status)}55`}}>
                   {statusBadgeLabel(s?.status)}
@@ -2927,7 +3009,8 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, setWo
       hrEmployees={hrEmployees} hrScheduleLocations={hrScheduleLocations} hrLeave={hrLeave}/>
 
     {logFor && (
-      <WeeklyLogForm workstream={logFor} companyId={companyId} setProgressLogs={setProgressLogs}
+      <WeeklyLogForm workstream={logFor} project={project} items={items} companyId={companyId}
+        setProgressLogs={setProgressLogs} setProgressMaterials={setProgressMaterials}
         refreshWorkstreamStatus={refreshWorkstreamStatus}
         onClose={()=>setLogFor(null)}/>
     )}
@@ -2943,6 +3026,7 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, setWo
     )}
     {historyFor && (
       <WorkstreamLogHistory workstream={historyFor} progressLogs={progressLogs} setProgressLogs={setProgressLogs}
+        progressMaterials={progressMaterials} items={items}
         refreshWorkstreamStatus={refreshWorkstreamStatus} isAdmin={isAdmin}
         onClose={()=>setHistoryFor(null)}/>
     )}
@@ -2992,14 +3076,18 @@ function WorkstreamSuggestions({ project, workstreams, statusByWsId, hrEmployees
           const hasLogs = s.status !== "no_data";
           let estimateNote = null;
           if (w.estimate_weeks!=null) {
+            const isDays = w.estimate_unit==="days";
             let comparison = "";
             if (s.projected_finish_date && s.estimated_finish_date) {
               const diffDays = Math.round((new Date(s.projected_finish_date)-new Date(s.estimated_finish_date))/86400000);
-              const diffWeeks = Math.round(Math.abs(diffDays)/7);
-              comparison = diffWeeks===0 ? " Tracking right on your estimate."
-                : ` At the current pace it's tracking ${diffWeeks} week${diffWeeks===1?"":"s"} ${diffDays>0?"slower":"faster"} than you guessed.`;
+              const diffUnits = isDays ? Math.abs(diffDays) : Math.round(Math.abs(diffDays)/7);
+              const unitLabel = isDays ? `day${diffUnits===1?"":"s"}` : `week${diffUnits===1?"":"s"}`;
+              comparison = diffUnits===0 ? " Tracking right on your estimate."
+                : ` At the current pace it's tracking ${diffUnits} ${unitLabel} ${diffDays>0?"slower":"faster"} than you guessed.`;
             }
-            estimateNote = `You estimated ~${fmtN(w.estimate_weeks)} week${+w.estimate_weeks===1?"":"s"}` +
+            const estimateDisplay = isDays ? Math.round(w.estimate_weeks*7*10)/10 : w.estimate_weeks;
+            const estimateUnitLabel = isDays ? `day${estimateDisplay===1?"":"s"}` : `week${estimateDisplay===1?"":"s"}`;
+            estimateNote = `You estimated ~${fmtN(estimateDisplay)} ${estimateUnitLabel}` +
               (s.estimated_finish_date?` (around ${s.estimated_finish_date}).`:".") + comparison;
           }
           return (
@@ -3046,9 +3134,13 @@ function WorkstreamSuggestions({ project, workstreams, statusByWsId, hrEmployees
 // per entry — lets Thijs correct or remove data his employees logged
 // (e.g. a mistaken week or a test entry), which the "+ Log" flow itself
 // deliberately doesn't expose since it's meant to stay a quick weekly form.
-function WorkstreamLogHistory({ workstream, progressLogs, setProgressLogs, refreshWorkstreamStatus, isAdmin, onClose }) {
+function WorkstreamLogHistory({ workstream, progressLogs, setProgressLogs, progressMaterials, items, refreshWorkstreamStatus, isAdmin, onClose }) {
   const [editLog, setEditLog] = useState(null);
   const logs = progressLogs.filter(l=>l.workstream_id===workstream.id).sort((a,b)=>b.week_ending.localeCompare(a.week_ending));
+  const materialsFor = logId => (progressMaterials||[])
+    .filter(m=>m.progress_log_id===logId)
+    .map(m=>{ const it=(items||[]).find(i=>i.id===m.item_id); return `${it?it.description:"?"} ×${fmtN(m.qty)}`; })
+    .join(", ");
 
   const remove = async (log) => {
     if (!window.confirm(`Delete the log for week ending ${log.week_ending}?`)) return;
@@ -3065,7 +3157,7 @@ function WorkstreamLogHistory({ workstream, progressLogs, setProgressLogs, refre
         <div className="modal-title">Progress History <span>{workstream.name}</span></div>
         <div className="tbl-wrap"><table className="tbl">
           <thead><tr><th>Week Ending</th><th className="num">Crew</th><th className="num">Qty Done</th>
-            <th className="num">Cost</th><th>Notes</th><th></th></tr></thead>
+            <th className="num">Cost</th><th>Materials</th><th>Notes</th><th></th></tr></thead>
           <tbody>
             {logs.map(l=>(
               <tr key={l.id}>
@@ -3073,6 +3165,7 @@ function WorkstreamLogHistory({ workstream, progressLogs, setProgressLogs, refre
                 <td className="num" style={{color:T.muted}}>{l.crew_size==null?"—":l.crew_size}</td>
                 <td className="num">{fmtQty(l.qty_done, workstream.unit)}</td>
                 <td className="num" style={{color:T.muted}}>{l.cost_incurred==null?"—":fmtR(l.cost_incurred)}</td>
+                <td style={{fontSize:12,color:T.muted}}>{materialsFor(l.id)||"—"}</td>
                 <td style={{fontSize:12,color:T.muted}}>{l.notes||"—"}</td>
                 <td style={{display:"flex",gap:5}}>
                   {isAdmin && <button className="btn btn-ghost btn-sm" onClick={()=>setEditLog(l)}>Edit</button>}
@@ -3080,7 +3173,7 @@ function WorkstreamLogHistory({ workstream, progressLogs, setProgressLogs, refre
                 </td>
               </tr>
             ))}
-            {logs.length===0 && <tr><td colSpan={6} className="empty">No logs yet for this workstream.</td></tr>}
+            {logs.length===0 && <tr><td colSpan={7} className="empty">No logs yet for this workstream.</td></tr>}
           </tbody>
         </table></div>
         <div style={{display:"flex",gap:9,marginTop:14}}>
@@ -3148,11 +3241,20 @@ function EditLogForm({ log, workstream, setProgressLogs, refreshWorkstreamStatus
   );
 }
 
-function WeeklyLogForm({ workstream, companyId, setProgressLogs, refreshWorkstreamStatus, onClose }) {
+function WeeklyLogForm({ workstream, project, items, companyId, setProgressLogs, setProgressMaterials, refreshWorkstreamStatus, onClose }) {
   const isoToday = new Date().toISOString().slice(0,10);
   const [form, setForm] = useState({week_ending:isoToday, crew_size:"", qty_done:"", cost_incurred:"", notes:""});
   const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
   const [saving, setSaving] = useState(false);
+
+  // Materials from stock (2026-08-25) — same idea as a job card's Materials
+  // Used section: pick items + qty here, and this issues the stock exactly
+  // like a maintenance job does, instead of only tracking a manual Rand
+  // figure in "Cost Incurred".
+  const [materials, setMaterials] = useState([]); // [{item_id, qty}]
+  const addMaterial    = ()=>setMaterials(r=>[...r,{item_id:"",qty:""}]);
+  const updMaterial    = (i,k,v)=>setMaterials(r=>r.map((x,j)=>j===i?{...x,[k]:v}:x));
+  const removeMaterial = i=>setMaterials(r=>r.filter((_,j)=>j!==i));
 
   const save = async () => {
     if (!form.week_ending || form.qty_done==="") { alert("Week ending and qty done are required."); return; }
@@ -3167,6 +3269,26 @@ function WeeklyLogForm({ workstream, companyId, setProgressLogs, refreshWorkstre
       };
       const ins = await sb.insert("project_progress_logs", row);
       setProgressLogs(p=>[...p, ins]);
+
+      // Issue stock for each material used, same as a job's Materials Used —
+      // and keep a project_progress_materials row so the workstream's own
+      // history shows what was pulled from stock, not just a cost figure.
+      const newProgressMats = [];
+      for(const m of materials){
+        const qty = parseFloat(m.qty)||0;
+        if(!m.item_id || qty<=0) continue;
+        await sb.insert("maint_issues", {
+          id: uid(), location_id: project.location_id, item_id: m.item_id, date: form.week_ending,
+          qty, destination_id: null, dest_name: null,
+          notes: `Project: ${project.name} — ${workstream.name}`,
+          company_id: companyId,
+        });
+        const pmRow = { id: uid(), progress_log_id: ins.id, item_id: m.item_id, qty, company_id: companyId };
+        await sb.insert("project_progress_materials", pmRow);
+        newProgressMats.push(pmRow);
+      }
+      if(newProgressMats.length) setProgressMaterials(p=>[...p, ...newProgressMats]);
+
       await refreshWorkstreamStatus?.();
       onClose();
     } catch(e) { alert("Save failed: "+e.message); }
@@ -3176,16 +3298,47 @@ function WeeklyLogForm({ workstream, companyId, setProgressLogs, refreshWorkstre
   return (
     <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div className="modal">
-        <div className="modal-title">Weekly Log <span>{workstream.name}</span></div>
+        <div className="modal-title">Progress Log <span>{workstream.name}</span></div>
         <div className="grid2">
-          <div className="field"><label>Week Ending</label><input type="date" value={form.week_ending} onChange={f("week_ending")}/></div>
+          <div className="field"><label>Date</label><input type="date" value={form.week_ending} onChange={f("week_ending")}/></div>
           <div className="field"><label>Crew Size</label><input type="number" value={form.crew_size} onChange={f("crew_size")}/></div>
         </div>
         <div className="grid2">
-          <div className="field"><label>Qty Done This Week ({WORKSTREAM_UNIT_LABEL[workstream.unit]})</label>
+          <div className="field"><label>Qty Done ({WORKSTREAM_UNIT_LABEL[workstream.unit]})</label>
             <input type="number" step="0.01" value={form.qty_done} onChange={f("qty_done")}/></div>
-          <div className="field"><label>Cost Incurred (R)</label><input type="number" step="0.01" value={form.cost_incurred} onChange={f("cost_incurred")}/></div>
+          <div className="field"><label>Cost Incurred (R, optional)</label><input type="number" step="0.01" value={form.cost_incurred} onChange={f("cost_incurred")}/></div>
         </div>
+
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+          <div className="section-title" style={{margin:0}}>Materials From Stock</div>
+          <button className="btn btn-ghost btn-sm" onClick={addMaterial}>+ Add Item</button>
+        </div>
+        <div style={{fontSize:11,color:T.muted,marginBottom:10,lineHeight:1.5}}>
+          Optional — anything pulled from stock for this workstream. This issues the stock, same as a job card.
+        </div>
+        {materials.length===0 && (
+          <div style={{fontSize:11,color:T.muted,marginBottom:14}}>Nothing added.</div>
+        )}
+        {materials.length>0 && (
+          <div style={{marginBottom:14}}>
+            {materials.map((m,i)=>(
+              <div key={i} style={{display:"flex",gap:7,marginBottom:7,alignItems:"center"}}>
+                <SearchableSelect
+                  value={m.item_id}
+                  onChange={v=>updMaterial(i,"item_id",v)}
+                  options={items.map(it=>({value:it.id,label:`${it.description} (${it.unit})`}))}
+                  placeholder="-- Select item --"
+                  style={{flex:1}}
+                  inputStyle={{...searchSelectInput,padding:"9px 10px",fontSize:14}}
+                />
+                <input className="count-input" type="number" placeholder="Qty" value={m.qty}
+                  onChange={e=>updMaterial(i,"qty",e.target.value)}/>
+                <button className="btn btn-danger btn-sm" onClick={()=>removeMaterial(i)}>x</button>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="field"><label>Notes</label><input type="text" value={form.notes} onChange={f("notes")}/></div>
         <div style={{display:"flex",gap:9}}>
           <button className="btn btn-primary" onClick={save} disabled={saving}>{saving?"Saving...":"Save Log"}</button>
@@ -3199,7 +3352,8 @@ function WeeklyLogForm({ workstream, companyId, setProgressLogs, refreshWorkstre
 function EditWorkstreamForm({ workstream, setWorkstreams, refreshWorkstreamStatus, onClose }) {
   const [form, setForm] = useState({...workstream, target_qty:String(workstream.target_qty), baseline_qty:String(workstream.baseline_qty),
     budget_cost: workstream.budget_cost==null?"":String(workstream.budget_cost),
-    estimate_weeks: workstream.estimate_weeks==null?"":String(workstream.estimate_weeks)});
+    estimate_unit: workstream.estimate_unit||"weeks",
+    estimate_value: estimateInputFromWeeks(workstream.estimate_weeks, workstream.estimate_unit||"weeks")});
   const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
   const [saving, setSaving] = useState(false);
 
@@ -3211,7 +3365,8 @@ function EditWorkstreamForm({ workstream, setWorkstreams, refreshWorkstreamStatu
         target_qty: parseFloat(form.target_qty)||0, baseline_qty: parseFloat(form.baseline_qty)||0,
         baseline_date: form.baseline_date||null,
         budget_cost: form.budget_cost===""?null:parseFloat(form.budget_cost),
-        estimate_weeks: form.estimate_weeks===""?null:parseFloat(form.estimate_weeks),
+        estimate_unit: form.estimate_unit,
+        estimate_weeks: estimateWeeksFromInput(form.estimate_value, form.estimate_unit),
         status: form.status,
       };
       await sb.update("project_workstreams", workstream.id, patch);
@@ -3257,8 +3412,14 @@ function EditWorkstreamForm({ workstream, setWorkstreams, refreshWorkstreamStatu
           <div className="field"><label>Baseline Date</label><input type="date" value={form.baseline_date||""} onChange={f("baseline_date")}/></div>
           <div className="field"><label>Budget Cost (R, optional)</label><input type="number" step="0.01" value={form.budget_cost} onChange={f("budget_cost")}/></div>
         </div>
-        <div className="field"><label>Your Estimate (weeks, optional)</label>
-          <input type="number" step="0.5" placeholder="e.g. 10" value={form.estimate_weeks} onChange={f("estimate_weeks")}/>
+        <div className="field"><label>Your Estimate (optional)</label>
+          <div style={{display:"flex",gap:8}}>
+            <input type="number" step="0.5" placeholder="e.g. 10" style={{flex:1}} value={form.estimate_value} onChange={f("estimate_value")}/>
+            <select value={form.estimate_unit} onChange={f("estimate_unit")} style={{flex:"0 0 110px"}}>
+              <option value="weeks">weeks</option>
+              <option value="days">days</option>
+            </select>
+          </div>
         </div>
         <div style={{display:"flex",gap:9}}>
           <button className="btn btn-primary" onClick={save} disabled={saving}>{saving?"Saving...":"Save Changes"}</button>
@@ -3272,7 +3433,7 @@ function EditWorkstreamForm({ workstream, setWorkstreams, refreshWorkstreamStatu
 
 function NewWorkstreamForm({ project, companyId, setWorkstreams, refreshWorkstreamStatus, onClose }) {
   const isoToday = new Date().toISOString().slice(0,10);
-  const [form, setForm] = useState({name:"",unit:"km",target_qty:"",baseline_qty:"0",baseline_date:isoToday,budget_cost:"",estimate_weeks:""});
+  const [form, setForm] = useState({name:"",unit:"km",target_qty:"",baseline_qty:"0",baseline_date:isoToday,budget_cost:"",estimate_unit:"weeks",estimate_value:""});
   const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
   const [saving, setSaving] = useState(false);
 
@@ -3285,7 +3446,8 @@ function NewWorkstreamForm({ project, companyId, setWorkstreams, refreshWorkstre
         target_qty: parseFloat(form.target_qty)||0, baseline_qty: parseFloat(form.baseline_qty)||0,
         baseline_date: form.baseline_date||null,
         budget_cost: form.budget_cost===""?null:parseFloat(form.budget_cost),
-        estimate_weeks: form.estimate_weeks===""?null:parseFloat(form.estimate_weeks),
+        estimate_unit: form.estimate_unit,
+        estimate_weeks: estimateWeeksFromInput(form.estimate_value, form.estimate_unit),
         status: "not_started",
       };
       const ins = await sb.insert("project_workstreams", row);
@@ -3314,8 +3476,14 @@ function NewWorkstreamForm({ project, companyId, setWorkstreams, refreshWorkstre
           <div className="field"><label>Baseline Date</label><input type="date" value={form.baseline_date} onChange={f("baseline_date")}/></div>
         </div>
         <div className="field"><label>Budget Cost (R, optional)</label><input type="number" step="0.01" value={form.budget_cost} onChange={f("budget_cost")}/></div>
-        <div className="field"><label>Your Estimate (weeks, optional)</label>
-          <input type="number" step="0.5" placeholder="e.g. 10" value={form.estimate_weeks} onChange={f("estimate_weeks")}/>
+        <div className="field"><label>Your Estimate (optional)</label>
+          <div style={{display:"flex",gap:8}}>
+            <input type="number" step="0.5" placeholder="e.g. 10" style={{flex:1}} value={form.estimate_value} onChange={f("estimate_value")}/>
+            <select value={form.estimate_unit} onChange={f("estimate_unit")} style={{flex:"0 0 110px"}}>
+              <option value="weeks">weeks</option>
+              <option value="days">days</option>
+            </select>
+          </div>
         </div>
         <div style={{display:"flex",gap:9}}>
           <button className="btn btn-primary" onClick={save} disabled={saving}>{saving?"Saving...":"Add Workstream"}</button>
@@ -3410,6 +3578,9 @@ function AuthenticatedApp() {
   const [workstreams,      setWorkstreams]      = useState([]);
   const [workstreamStatus, setWorkstreamStatus] = useState([]);
   const [progressLogs,     setProgressLogs]     = useState([]);
+  // Materials pulled from stock against a progress log (2026-08-25) — same
+  // company-wide, joined-by-id reasoning as progressLogs itself.
+  const [progressMaterials,setProgressMaterials] = useState([]);
   // Cross-app read (2026-08-19) — HR/Linen's staff/schedule/leave tables,
   // same shared Supabase project, used only by the Projects AI Suggestions
   // panel to gauge maintenance-staff availability per lodge. See
@@ -3435,7 +3606,7 @@ function AuthenticatedApp() {
     try{
       const cf = `company_id=eq.${companyId}`;
       const[itemRows,purchRows,issueRows,countRows,destRows,jobRows,tplRows,jobMatRows,tplMatRows,slipRows,
-            projectRows,workstreamRows,workstreamStatusRows,progressLogRows,
+            projectRows,workstreamRows,workstreamStatusRows,progressLogRows,progressMatRows,
             hrEmployeeRows,hrScheduleLocationRows,hrLeaveRows]=await Promise.all([
         sb.select("maint_items", `active=eq.true&${cf}&order=sort_order.asc`),
         sb.select("maint_purchases", cf),
@@ -3451,6 +3622,7 @@ function AuthenticatedApp() {
         sb.select("project_workstreams", cf),
         sb.select("project_workstream_status", cf),
         sb.select("project_progress_logs", cf),
+        sb.select("project_progress_materials", cf),
         sb.select("hr_employees", `active=eq.true&${cf}`),
         sb.select("hr_schedule_locations", cf),
         sb.select("hr_leave", cf),
@@ -3476,6 +3648,7 @@ function AuthenticatedApp() {
       setWorkstreams(workstreamRows.map(r=>({...r,target_qty:+r.target_qty,baseline_qty:+r.baseline_qty,budget_cost:r.budget_cost==null?null:+r.budget_cost,estimate_weeks:r.estimate_weeks==null?null:+r.estimate_weeks})));
       setWorkstreamStatus(workstreamStatusRows);
       setProgressLogs(progressLogRows.map(r=>({...r,crew_size:r.crew_size==null?null:+r.crew_size,qty_done:+r.qty_done,cost_incurred:r.cost_incurred==null?null:+r.cost_incurred})));
+      setProgressMaterials(progressMatRows.map(r=>({...r,qty:+r.qty})));
       setHrEmployees(hrEmployeeRows);
       setHrScheduleLocations(hrScheduleLocationRows);
       setHrLeave(hrLeaveRows);
@@ -3703,12 +3876,14 @@ function AuthenticatedApp() {
                                        templates={templates} setJobs={setJobs} setJobMaterials={setJobMaterials}
                                        setIssues={setIssues} setTemplates={setTemplates} isAdmin={isAdmin} companyId={companyId}
                                        projects={projects} workstreamStatus={workstreamStatus} progressLogs={progressLogs}
-                                       workstreams={workstreams}/>}
+                                       workstreams={workstreams} hrEmployees={hrEmployees}/>}
           {page==="projects"     && <ProjectsPage locId={locId} projects={projects} workstreams={workstreams}
                                        workstreamStatus={workstreamStatus} progressLogs={progressLogs}
+                                       progressMaterials={progressMaterials} setProgressMaterials={setProgressMaterials}
                                        setProjects={setProjects} setWorkstreams={setWorkstreams} setProgressLogs={setProgressLogs}
                                        refreshWorkstreamStatus={refreshWorkstreamStatus}
                                        hrEmployees={hrEmployees} hrScheduleLocations={hrScheduleLocations} hrLeave={hrLeave}
+                                       itemsByLoc={allData.items}
                                        isAdmin={isAdmin} companyId={companyId}/>}
           {page==="templates"    && isAdmin && <JobTemplates locId={locId} templates={templates} setTemplates={setTemplates}
                                        templateMaterials={templateMaterials} setTemplateMaterials={setTemplateMaterials}
