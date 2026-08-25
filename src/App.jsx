@@ -368,6 +368,108 @@ function Destinations({ locId, destinations, setDestinations, companyId }) {
   </>);
 }
 
+// Type-to-search dropdown (2026-08-25) — same value/onChange contract as a
+// plain <select> (value = selected option's `value`, onChange receives the
+// new value), but lets staff type a few letters to filter instead of
+// scrolling a long native list. Used for item/supplier/member-style
+// pickers with many options; short toggles/enums (job type, destination,
+// status, recurrence, unit) stay as plain <select>s since search doesn't
+// help there. `options` is [{ value, label }].
+const searchSelectInput = {width:"100%",background:"rgba(0,0,0,.25)",border:`1px solid ${T.border}`,borderRadius:6,
+  padding:"10px 11px",color:T.cream,fontFamily:"'Inter',sans-serif",fontSize:16,outline:"none"};
+
+function SearchableSelect({ value, onChange, options, placeholder = "Select…", style, inputStyle, disabled }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [highlight, setHighlight] = useState(0);
+  const wrapRef = useRef(null);
+
+  const selected = options.find((o) => o.value === value);
+  const q = query.trim().toLowerCase();
+  const filtered = q ? options.filter((o) => o.label.toLowerCase().includes(q)) : options;
+
+  useEffect(() => {
+    function onDocDown(e) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) {
+        setOpen(false);
+        setQuery("");
+      }
+    }
+    document.addEventListener("mousedown", onDocDown);
+    return () => document.removeEventListener("mousedown", onDocDown);
+  }, []);
+
+  function choose(opt) {
+    onChange(opt.value);
+    setQuery("");
+    setOpen(false);
+  }
+
+  function handleKeyDown(e) {
+    if (!open) {
+      if (e.key === "ArrowDown" || e.key === "Enter") {
+        setOpen(true);
+        setHighlight(0);
+      }
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlight((h) => Math.min(h + 1, filtered.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlight((h) => Math.max(h - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (filtered[highlight]) choose(filtered[highlight]);
+    } else if (e.key === "Escape") {
+      setOpen(false);
+      setQuery("");
+    }
+  }
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative", ...style }}>
+      <input
+        type="text"
+        style={inputStyle || searchSelectInput}
+        placeholder={selected && !open ? selected.label : placeholder}
+        value={open ? query : selected ? selected.label : ""}
+        onFocus={() => { setOpen(true); setQuery(""); setHighlight(0); }}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); setHighlight(0); }}
+        onKeyDown={handleKeyDown}
+        disabled={disabled}
+      />
+      {open && (
+        <div
+          style={{
+            position: "absolute", top: "100%", left: 0, right: 0, marginTop: 2, zIndex: 50,
+            background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8,
+            maxHeight: 220, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,.35)",
+          }}
+        >
+          {filtered.length === 0 && (
+            <div style={{ padding: "7px 10px", fontSize: 12, color: T.muted }}>No matches</div>
+          )}
+          {filtered.map((o, i) => (
+            <div
+              key={o.value}
+              onMouseDown={(e) => { e.preventDefault(); choose(o); }}
+              onMouseEnter={() => setHighlight(i)}
+              style={{
+                padding: "7px 10px", fontSize: 13, cursor: "pointer", color: T.cream,
+                background: i === highlight ? "rgba(184,147,90,.14)" : "transparent",
+              }}
+            >
+              {o.label}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── SCAN A SLIP (Purchases) ─────────────────────────────────────────────────
 // Photograph or upload a purchase slip/invoice, let /api/parse-slip (Claude
 // vision, server-side) read the line items, then review/correct before
@@ -493,10 +595,13 @@ function MaintSlipScanCard({ items, locId, companyId, onSaved, memberBillingEnab
                 <tr key={r.key} style={{background:r.skip?"rgba(0,0,0,.15)":r.billToMember?"rgba(184,147,90,.10)":r.confident?"rgba(90,155,106,.06)":"rgba(184,147,90,.08)"}}>
                   <td style={{fontSize:12,color:T.muted,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.raw_text}</td>
                   <td>
-                    <select value={r.item_id} onChange={e=>updateRow(r.key,{item_id:e.target.value})} style={{minWidth:160}}>
-                      <option value="">— Select item —</option>
-                      {items.map(it=><option key={it.id} value={it.id}>{it.description}</option>)}
-                    </select>
+                    <SearchableSelect
+                      value={r.item_id}
+                      onChange={v=>updateRow(r.key,{item_id:v})}
+                      options={items.map(it=>({value:it.id,label:it.description}))}
+                      placeholder="— Select item —"
+                      style={{minWidth:160}}
+                    />
                   </td>
                   <td className="num"><input type="number" style={{width:70}} value={r.qty} onChange={e=>updateRow(r.key,{qty:e.target.value})}/></td>
                   <td className="num"><input type="number" step="0.01" style={{width:90}} value={r.total_cost} onChange={e=>updateRow(r.key,{total_cost:e.target.value})}/></td>
@@ -648,9 +753,12 @@ function MemberPurchaseModal({ companyId, locId, onClose, pendingRefresh, onBill
               </div>
             ))}
             <div style={{display:"flex",gap:8,marginTop:10,flexWrap:"wrap"}}>
-              <select value={billMemberId} onChange={e=>setBillMemberId(e.target.value)}>
-                {members.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
-              </select>
+              <SearchableSelect
+                value={billMemberId}
+                onChange={setBillMemberId}
+                options={members.map(m=>({value:m.id,label:m.name}))}
+                style={{minWidth:180}}
+              />
               <button className="btn btn-primary" type="button" onClick={billSelected} disabled={billing||selected.size===0}>{billing?"Billing…":`Bill ${selected.size||""} selected to member`}</button>
             </div>
             {billMessage&&<div style={{fontSize:12,marginTop:6,color:T.muted}}>{billMessage}</div>}
@@ -658,9 +766,11 @@ function MemberPurchaseModal({ companyId, locId, onClose, pendingRefresh, onBill
         )}
 
         <div className="field"><label>Member</label>
-          <select value={form.member_id} onChange={e=>setForm(p=>({...p,member_id:e.target.value}))}>
-            {members.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
-          </select>
+          <SearchableSelect
+            value={form.member_id}
+            onChange={v=>setForm(p=>({...p,member_id:v}))}
+            options={members.map(m=>({value:m.id,label:m.name}))}
+          />
         </div>
         <div className="grid2">
           <div className="field"><label>Date</label><input type="date" value={form.date} onChange={e=>setForm(p=>({...p,date:e.target.value}))}/></div>
@@ -755,10 +865,12 @@ function Purchases({ locId, items, purchases, setPurchases, isAdmin, companyId, 
         <div className="modal">
           <div className="modal-title">Log <span>Purchase</span></div>
           <div className="field"><label>Item</label>
-            <select value={form.item_id} onChange={f("item_id")}>
-              <option value="">-- Select item --</option>
-              {items.map(i=><option key={i.id} value={i.id}>{i.description}</option>)}
-            </select>
+            <SearchableSelect
+              value={form.item_id}
+              onChange={v=>setForm(p=>({...p,item_id:v}))}
+              options={items.map(i=>({value:i.id,label:i.description}))}
+              placeholder="-- Select item --"
+            />
           </div>
           <div className="grid2">
             <div className="field"><label>Date</label><DateField value={form.date} onChange={v=>setForm(p=>({...p,date:v}))}/></div>
@@ -872,10 +984,13 @@ function Issues({ locId, items, issues, setIssues, destinations, purchases, jobs
             </select>
           </div>
           <div className="field"><label>Item</label>
-            <select value={form.item_id} onChange={f("item_id")} disabled={!category}>
-              <option value="">{category ? "-- Select item --" : "Pick a category first"}</option>
-              {itemsInCat.map(i=><option key={i.id} value={i.id}>{i.description} ({i.unit})</option>)}
-            </select>
+            <SearchableSelect
+              value={form.item_id}
+              onChange={v=>setForm(p=>({...p,item_id:v}))}
+              options={itemsInCat.map(i=>({value:i.id,label:`${i.description} (${i.unit})`}))}
+              placeholder={category ? "-- Select item --" : "Pick a category first"}
+              disabled={!category}
+            />
           </div>
           <div className="grid2">
             <div className="field"><label>Date</label><DateField value={form.date} onChange={v=>setForm(p=>({...p,date:v}))}/></div>
@@ -1798,16 +1913,14 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates,
           <div style={{marginBottom:14}}>
             {extras.map((ex,i)=>(
               <div key={i} style={{display:"flex",gap:7,marginBottom:7,alignItems:"center"}}>
-                <select value={ex.item_id} onChange={e=>updExtra(i,"item_id",e.target.value)}
-                  style={{flex:1,background:"rgba(0,0,0,.25)",border:`1px solid ${T.border}`,borderRadius:6,
-                    padding:"9px 10px",color:T.cream,fontFamily:"'Inter',sans-serif",fontSize:14,outline:"none"}}>
-                  <option value="">-- Select item --</option>
-                  {items.map(it=>(
-                    <option key={it.id} value={it.id}>
-                      {it.description} ({it.unit}){plannedIds.has(it.id)?" — already on card":""}
-                    </option>
-                  ))}
-                </select>
+                <SearchableSelect
+                  value={ex.item_id}
+                  onChange={v=>updExtra(i,"item_id",v)}
+                  options={items.map(it=>({value:it.id,label:`${it.description} (${it.unit})${plannedIds.has(it.id)?" — already on card":""}`}))}
+                  placeholder="-- Select item --"
+                  style={{flex:1}}
+                  inputStyle={{...searchSelectInput,padding:"9px 10px",fontSize:14}}
+                />
                 <input className="count-input" type="number" placeholder="Qty" value={ex.qty}
                   onChange={e=>updExtra(i,"qty",e.target.value)}/>
                 <button className="btn btn-danger btn-sm" onClick={()=>removeExtra(i)}>x</button>
@@ -2042,10 +2155,15 @@ function MaterialPicker({ items, rows, setRows }) {
               {categories.map(c=><option key={c} value={c}>{c}</option>)}
               {uncategorisedCount>0 && <option value="__none__">Uncategorised</option>}
             </select>
-            <select value={r.item_id} onChange={e=>upd(i,"item_id",e.target.value)} disabled={!r.category} style={{...selectStyle,opacity:r.category?1:.5}}>
-              <option value="">{r.category ? "-- Select item --" : "Pick a category first"}</option>
-              {itemsInCat.map(it=><option key={it.id} value={it.id}>{it.description} ({it.unit})</option>)}
-            </select>
+            <SearchableSelect
+              value={r.item_id}
+              onChange={v=>upd(i,"item_id",v)}
+              options={itemsInCat.map(it=>({value:it.id,label:`${it.description} (${it.unit})`}))}
+              placeholder={r.category ? "-- Select item --" : "Pick a category first"}
+              disabled={!r.category}
+              style={{flex:1,opacity:r.category?1:.5}}
+              inputStyle={{...selectStyle}}
+            />
             <input className="count-input" type="number" placeholder="Qty" value={r.qty}
               onChange={e=>upd(i,"qty",e.target.value)}/>
             <button className="btn btn-danger btn-sm" onClick={()=>remove(i)}>x</button>
