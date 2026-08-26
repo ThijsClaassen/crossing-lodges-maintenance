@@ -297,10 +297,10 @@ function StockItems({ locId, items, setItems, companyId }) {
             <div className="field"><label>Position</label><input type="text" value={form.position||""} onChange={f("position")}/></div>
           </div>
           <div className="grid2">
-            <div className="field"><label>Opening Qty</label><input type="number" value={form.open_qty||""} onChange={f("open_qty")}/></div>
-            <div className="field"><label>Opening Cost / Unit (R)</label><input type="number" step="0.01" value={form.open_cost||""} onChange={f("open_cost")}/></div>
-            <div className="field"><label>Min Units (reorder trigger)</label><input type="number" value={form.min_units||""} onChange={f("min_units")}/></div>
-            <div className="field"><label>Max Units (target stock)</label><input type="number" value={form.max_units||""} onChange={f("max_units")}/></div>
+            <div className="field"><label>Opening Qty</label><input type="number" inputMode="decimal" value={form.open_qty||""} onChange={f("open_qty")}/></div>
+            <div className="field"><label>Opening Cost / Unit (R)</label><input type="number" inputMode="decimal" step="0.01" value={form.open_cost||""} onChange={f("open_cost")}/></div>
+            <div className="field"><label>Min Units (reorder trigger)</label><input type="number" inputMode="decimal" value={form.min_units||""} onChange={f("min_units")}/></div>
+            <div className="field"><label>Max Units (target stock)</label><input type="number" inputMode="decimal" value={form.max_units||""} onChange={f("max_units")}/></div>
           </div>
           <div style={{display:"flex",gap:9}}>
             <button className="btn btn-primary" onClick={save}>{editId?"Save Changes":"Add Item"}</button>
@@ -594,7 +594,7 @@ function MaintSlipScanCard({ items, locId, companyId, onSaved, memberBillingEnab
                 <option value="excl">Already exclude VAT</option>
               </select>
             </div>
-            {review.pricesIncludeVat && <div className="field"><label>VAT rate %</label><input type="number" value={review.vatRate} onChange={e=>setVatRate(e.target.value)}/></div>}
+            {review.pricesIncludeVat && <div className="field"><label>VAT rate %</label><input type="number" inputMode="decimal" value={review.vatRate} onChange={e=>setVatRate(e.target.value)}/></div>}
           </div>
           <div style={{fontSize:12,color:T.muted,margin:"8px 0"}}>
             {review.rows.length} line{review.rows.length===1?"":"s"} read from the slip. Green = matched automatically — check it's right. Amber = pick the item, or tick Skip to leave it out.
@@ -616,8 +616,8 @@ function MaintSlipScanCard({ items, locId, companyId, onSaved, memberBillingEnab
                       style={{minWidth:160}}
                     />
                   </td>
-                  <td className="num"><input type="number" style={{width:70}} value={r.qty} onChange={e=>updateRow(r.key,{qty:e.target.value})}/></td>
-                  <td className="num"><input type="number" step="0.01" style={{width:90}} value={r.total_cost} onChange={e=>updateRow(r.key,{total_cost:e.target.value})}/></td>
+                  <td className="num"><input type="number" inputMode="decimal" style={{width:70}} value={r.qty} onChange={e=>updateRow(r.key,{qty:e.target.value})}/></td>
+                  <td className="num"><input type="number" inputMode="decimal" step="0.01" style={{width:90}} value={r.total_cost} onChange={e=>updateRow(r.key,{total_cost:e.target.value})}/></td>
                   <td><input type="checkbox" checked={r.skip} onChange={e=>updateRow(r.key,{skip:e.target.checked})}/></td>
                   {memberBillingEnabled && <td><input type="checkbox" checked={r.billToMember} onChange={e=>updateRow(r.key,{billToMember:e.target.checked, skip:e.target.checked?false:r.skip})}/></td>}
                 </tr>
@@ -787,7 +787,7 @@ function MemberPurchaseModal({ companyId, locId, onClose, pendingRefresh, onBill
         </div>
         <div className="grid2">
           <div className="field"><label>Date</label><input type="date" value={form.date} onChange={e=>setForm(p=>({...p,date:e.target.value}))}/></div>
-          <div className="field"><label>Amount (R)</label><input type="number" step="0.01" value={form.amount} onChange={e=>setForm(p=>({...p,amount:e.target.value}))}/></div>
+          <div className="field"><label>Amount (R)</label><input type="number" inputMode="decimal" step="0.01" value={form.amount} onChange={e=>setForm(p=>({...p,amount:e.target.value}))}/></div>
         </div>
         <div className="field"><label>Description</label><input type="text" value={form.description} onChange={e=>setForm(p=>({...p,description:e.target.value}))} placeholder="e.g. Hardware for repair"/></div>
         {message&&<div style={{fontSize:12,color:T.muted,marginBottom:8}}>{message}</div>}
@@ -894,8 +894,8 @@ function Purchases({ locId, items, purchases, setPurchases, isAdmin, companyId, 
           </div>
           <div className="grid2">
             <div className="field"><label>Date</label><DateField value={form.date} onChange={v=>setForm(p=>({...p,date:v}))}/></div>
-            <div className="field"><label>Qty Purchased</label><input type="number" value={form.qty} onChange={f("qty")}/></div>
-            <div className="field"><label>Total Cost (R excl VAT)</label><input type="number" step="0.01" value={form.total_cost} onChange={f("total_cost")}/></div>
+            <div className="field"><label>Qty Purchased</label><input type="number" inputMode="decimal" value={form.qty} onChange={f("qty")}/></div>
+            <div className="field"><label>Total Cost (R excl VAT)</label><input type="number" inputMode="decimal" step="0.01" value={form.total_cost} onChange={f("total_cost")}/></div>
             <div className="field"><label>Supplier</label><input type="text" value={form.supplier} onChange={f("supplier")}/></div>
           </div>
           {form.qty&&form.total_cost&&(
@@ -1014,7 +1014,7 @@ function Issues({ locId, items, issues, setIssues, destinations, purchases, jobs
           </div>
           <div className="grid2">
             <div className="field"><label>Date</label><DateField value={form.date} onChange={v=>setForm(p=>({...p,date:v}))}/></div>
-            <div className="field"><label>Qty Issued</label><input type="number" value={form.qty} onChange={f("qty")}/></div>
+            <div className="field"><label>Qty Issued</label><input type="number" inputMode="decimal" value={form.qty} onChange={f("qty")}/></div>
           </div>
           <div className="field"><label>Issued To</label>
             <select value={form.destination_id} onChange={f("destination_id")}>
@@ -1153,8 +1153,8 @@ function CreditNotes({ locId, items, creditNotes, setCreditNotes, setIssues, isA
           </div>
           <div className="grid2">
             <div className="field"><label>Date</label><DateField value={form.date} onChange={v=>setForm(p=>({...p,date:v}))}/></div>
-            <div className="field"><label>Qty returned</label><input type="number" value={form.qty} onChange={f("qty")}/></div>
-            <div className="field"><label>Unit cost (R excl VAT)</label><input type="number" step="0.01" value={form.unit_cost} onChange={f("unit_cost")}/></div>
+            <div className="field"><label>Qty returned</label><input type="number" inputMode="decimal" value={form.qty} onChange={f("qty")}/></div>
+            <div className="field"><label>Unit cost (R excl VAT)</label><input type="number" inputMode="decimal" step="0.01" value={form.unit_cost} onChange={f("unit_cost")}/></div>
             <div className="field"><label>Supplier</label><input type="text" value={form.supplier} onChange={f("supplier")}/></div>
           </div>
           <div className="field"><label>Reason</label>
@@ -1258,7 +1258,7 @@ function StockCount({ locId, items, purchases, issues, counts, setCounts, compan
               {lc?<>{fmtN(lc.count_qty)} <span style={{fontSize:9,color:T.border}}>{lc.count_date}</span></>:"—"}
             </td>
             <td className="num">
-              <input className="count-input" type="number"
+              <input className="count-input" type="number" inputMode="decimal"
                 value={draft[item.id]||""} placeholder={lc?fmtN(lc.count_qty):"—"}
                 onChange={e=>setDraft(d=>({...d,[item.id]:e.target.value}))}/>
             </td>
@@ -1406,6 +1406,12 @@ function Orders({ items, purchases, issues, counts, jobs, jobMaterials, template
 // ─── DATE UTILITIES FOR SCHEDULING ───────────────────────────────────────────
 const parseDMY = s => { if(!s) return null; const[d,m,y]=s.split("/").map(Number); return new Date(y,m-1,d); };
 const fmtDMY   = dt => `${String(dt.getDate()).padStart(2,"0")}/${String(dt.getMonth()+1).padStart(2,"0")}/${dt.getFullYear()}`;
+// DD/MM/YYYY -> YYYY-MM-DD (2026-08-26, Internal Invoicing) — job dates in
+// this app are all DD/MM/YYYY text, but the get_employee_hourly_rate/
+// get_maintenance_department_cost RPCs take a real Postgres `date`, which
+// PostgREST expects as ISO. Distinct from Projects' own dates, which are
+// already ISO via <input type="date">.
+const dmyToIso = s => { const d = parseDMY(s); if(!d) return null; return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
 const addPeriod = (dt,type,n) => {
   const d = new Date(dt.getTime());
   if(type==="days")   d.setDate(d.getDate()+n);
@@ -1996,6 +2002,15 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates, hr
       await sb.update("maint_jobs", job.id, {status:"completed", completed_date:date, completion_notes:notes||null});
       setJobs(p=>p.map(j=>j.id===job.id?{...j,status:"completed",completed_date:date,completion_notes:notes||null}:j));
 
+      // 3a. Internal Invoicing (2026-08-26) — bill this job's labor +
+      // material cost back to whichever site/destination it was done for.
+      // Uses the labor rows and stock issues we just built above, so no
+      // extra fetch is needed. Never blocks completion on failure.
+      await generateJobInvoice({
+        job, laborInserts, materialLines: newIssues,
+        items, purchases, companyId, completedDate: date,
+      });
+
       // 3b. This job was auto-created for a self-serviced vehicle (Operations
       // app) — completing it here needs to feed the service date (and
       // optionally the odometer) back into that vehicle's record, or the
@@ -2062,7 +2077,7 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates, hr
             </div>
             <div className="field" style={{marginBottom:0}}>
               <label>Current Odometer (optional)</label>
-              <input type="number" min="0" placeholder="e.g. 84500" value={odometer} onChange={e=>setOdometer(e.target.value)}/>
+              <input type="number" inputMode="decimal" min="0" placeholder="e.g. 84500" value={odometer} onChange={e=>setOdometer(e.target.value)}/>
             </div>
           </div>
         )}
@@ -2087,7 +2102,7 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates, hr
                     <td style={{fontWeight:600}}>{item.description} <span style={{fontSize:10,color:T.muted}}>({item.unit})</span></td>
                     <td className="num" style={{color:T.muted}}>{fmtN(m.qty_planned)}</td>
                     <td className="num">
-                      <input className="count-input" type="number" value={used[m.id]??""}
+                      <input className="count-input" type="number" inputMode="decimal" value={used[m.id]??""}
                         onChange={e=>setUsed(u=>({...u,[m.id]:e.target.value}))}/>
                     </td>
                   </tr>
@@ -2119,7 +2134,7 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates, hr
                   style={{flex:1}}
                   inputStyle={{...searchSelectInput,padding:"9px 10px",fontSize:14}}
                 />
-                <input className="count-input" type="number" placeholder="Qty" value={ex.qty}
+                <input className="count-input" type="number" inputMode="decimal" placeholder="Qty" value={ex.qty}
                   onChange={e=>updExtra(i,"qty",e.target.value)}/>
                 <button className="btn btn-danger btn-sm" onClick={()=>removeExtra(i)}>x</button>
               </div>
@@ -2144,7 +2159,7 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates, hr
                   <input type="checkbox" checked={!!ticked[e.id]} onChange={()=>toggleStaff(e.id)}/>
                   <span style={{fontSize:13,color:T.cream}}>{e.name}</span>
                 </label>
-                <input className="count-input" type="number" step="0.5" placeholder="Hours"
+                <input className="count-input" type="number" inputMode="decimal" step="0.5" placeholder="Hours"
                   disabled={!ticked[e.id]} value={hours[e.id]||""}
                   onChange={ev=>setHours(h=>({...h,[e.id]:ev.target.value}))}/>
               </div>
@@ -2480,7 +2495,7 @@ function MaterialPicker({ items, rows, setRows }) {
               style={{flex:1,opacity:r.category?1:.5}}
               inputStyle={{...selectStyle}}
             />
-            <input className="count-input" type="number" placeholder="Qty" value={r.qty}
+            <input className="count-input" type="number" inputMode="decimal" placeholder="Qty" value={r.qty}
               onChange={e=>upd(i,"qty",e.target.value)}/>
             <button className="btn btn-danger btn-sm" onClick={()=>remove(i)}>x</button>
           </div>
@@ -2646,7 +2661,7 @@ function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTe
             </div>
             {form.recurrence_type!=="none" && (
               <div className="field"><label>Interval (N)</label>
-                <input type="number" min="1" value={form.recurrence_n} onChange={f("recurrence_n")}/>
+                <input type="number" inputMode="decimal" min="1" value={form.recurrence_n} onChange={f("recurrence_n")}/>
               </div>
             )}
             <div className="field"><label>First / Next Due</label>
@@ -2692,6 +2707,70 @@ function weightedCost(item, purchases) {
   const totQty = oQty+pQty;
   if(totQty<=0) return item.open_cost||0;
   return (oValue+pValue)/totQty;
+}
+
+// ─── INTERNAL INVOICING (2026-08-26) ─────────────────────────────────────────
+// Auto-generates one internal invoice per completed job, so Thijs can see
+// what the (single, multi-site) Maintenance team actually costs/saves each
+// lodge. Billed at cost (0% markup): material cost uses the exact same
+// weightedCost() this app already uses for Destination Costs; labor cost
+// uses each employee's own real loaded monthly cost (salary + medical aid +
+// pension + housing, from hr_contracts) divided by a configurable "standard
+// hours/month", via the get_employee_hourly_rate RPC — a direct client read
+// of hr_contracts would return nothing for a Maintenance admin who isn't
+// also an HR Admin (hr_contracts RLS requires is_hr_admin()).
+//
+// Deliberately never throws back to the caller — an internal invoice
+// failing to generate should never block a technician from completing a
+// job. Errors are logged and swallowed, same reasoning as the vehicle
+// service-date sync a few lines away in CompleteJob.save().
+async function generateJobInvoice({ job, laborInserts, materialLines, items, purchases, companyId, completedDate }) {
+  try {
+    const materialCost = (materialLines||[]).reduce((sum,m)=>{
+      const item = items.find(i=>i.id===m.item_id);
+      if(!item || !(m.qty>0)) return sum;
+      return sum + m.qty*weightedCost(item, purchases);
+    }, 0);
+
+    const asOfIso = dmyToIso(completedDate) || new Date().toISOString().slice(0,10);
+
+    // One rate lookup per unique employee on this job, not per labor row.
+    const rateByEmployee = {};
+    for(const l of laborInserts){
+      if(!l.employee_id){ rateByEmployee[l.employee_id] = 0; continue; }
+      if(rateByEmployee[l.employee_id]!==undefined) continue;
+      const { data, error } = await supabase.rpc("get_employee_hourly_rate", {
+        p_employee_id: l.employee_id, p_company_id: companyId, p_as_of_date: asOfIso,
+      });
+      rateByEmployee[l.employee_id] = error ? 0 : Number(data||0);
+    }
+
+    const laborLines = laborInserts.map(l=>{
+      const rate = rateByEmployee[l.employee_id] || 0;
+      return {
+        id: uid(), employee_id: l.employee_id||null, employee_name: l.employee_name,
+        hours: l.hours, hourly_rate: rate, line_cost: Math.round(l.hours*rate*100)/100,
+        company_id: companyId,
+      };
+    });
+    const laborCost = laborLines.reduce((s,l)=>s+l.line_cost, 0);
+    const totalCost = Math.round((laborCost+materialCost)*100)/100;
+
+    const invoice = {
+      id: uid(), company_id: companyId, job_id: job.id, location_id: job.location_id,
+      destination_id: job.destination_id||null, dest_name: job.dest_name||null,
+      job_name: job.name, completed_date: completedDate,
+      labor_cost: Math.round(laborCost*100)/100,
+      material_cost: Math.round(materialCost*100)/100,
+      total_cost: totalCost,
+    };
+    await sb.insert("maint_job_invoices", invoice);
+    for(const line of laborLines){
+      await sb.insert("maint_job_invoice_labor_lines", { ...line, invoice_id: invoice.id });
+    }
+  }catch(e){
+    console.error("Could not generate internal invoice for job", job.id, e);
+  }
 }
 
 // Roll issues up per destination. Issues keep a dest_name snapshot, so
@@ -2946,6 +3025,252 @@ function DestinationCosts({ destinations, issues, items, purchases, jobs }) {
     </table></div>
 
     {open && <DestinationDetail row={open} onClose={()=>setOpen(null)}/>}
+  </>);
+}
+
+// ─── INTERNAL BILLING PAGE ────────────────────────────────────────────────────
+// Admin-only. Rolls up the auto-generated per-job invoices (generateJobInvoice,
+// above) into a monthly P&L: what got billed to the lodges (Invoiced) against
+// what the department actually costs in full (every active Maintenance
+// employee's real loaded cost, whether their hours were billed or sat idle,
+// via the get_maintenance_department_cost RPC) — the Gap between the two is
+// unbilled/idle labor capacity, which is the whole reason Thijs asked for
+// this: "I want an invoicing system so I know what our maintenance team is
+// costing/saving us for the lodges." Material cost algebraically cancels out
+// of the Gap (billed at 0% markup, so material invoiced == material
+// consumed) — the Gap is purely a labor-utilization number.
+//
+// Known, deliberate scope limit: material issued OUTSIDE of a job (no job_id
+// — maint_issues has no `reason` column the way Food/Beverage's write-offs
+// do) isn't separately tracked here; it simply isn't billed to anyone. Worth
+// knowing, not fixed here.
+function InternalBillingPage({ invoices, billingSettings, setBillingSettings, companyId }) {
+  const [month, setMonth]           = useState(()=>new Date().toISOString().slice(0,7)); // YYYY-MM
+  const [hoursInput, setHoursInput] = useState(String(billingSettings?.standard_hours_per_month || 190));
+  const [savingHours, setSavingHours] = useState(false);
+  const [deptCost, setDeptCost]     = useState(null);
+  const [deptCostErr, setDeptCostErr] = useState(null);
+  const [openInvoice, setOpenInvoice] = useState(null);
+  const [laborLines, setLaborLines] = useState([]);
+  const [loadingLines, setLoadingLines] = useState(false);
+
+  useEffect(()=>{ setHoursInput(String(billingSettings?.standard_hours_per_month || 190)); },[billingSettings]);
+
+  const monthInvoices = useMemo(()=>
+    invoices.filter(inv=>{
+      const d = parseDMY(inv.completed_date);
+      if(!d) return false;
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`===month;
+    })
+  ,[invoices, month]);
+
+  const totalInvoiced = monthInvoices.reduce((s,i)=>s+i.total_cost,0);
+  const totalLabor    = monthInvoices.reduce((s,i)=>s+i.labor_cost,0);
+  const totalMaterial = monthInvoices.reduce((s,i)=>s+i.material_cost,0);
+
+  useEffect(()=>{
+    let cancelled = false;
+    (async()=>{
+      setDeptCostErr(null); setDeptCost(null);
+      if(!companyId) return;
+      try{
+        const [y,m] = month.split("-").map(Number);
+        const lastDay = new Date(y, m, 0).toISOString().slice(0,10);
+        const { data, error } = await supabase.rpc("get_maintenance_department_cost", {
+          p_company_id: companyId, p_as_of_date: lastDay,
+        });
+        if(cancelled) return;
+        if(error){ setDeptCostErr(error.message); }
+        else setDeptCost(Number(data||0));
+      }catch(e){ if(!cancelled) setDeptCostErr(e.message); }
+    })();
+    return ()=>{cancelled=true;};
+  },[companyId, month]);
+
+  // Department Cost (Full) = full labor cost (everyone, billed or not) +
+  // material actually consumed this month. Gap = that minus what was
+  // invoiced — see comment above for why this reduces to a pure labor
+  // utilization number.
+  const deptCostFull = deptCost==null ? null : deptCost + totalMaterial;
+  const gap = deptCostFull==null ? null : deptCostFull - totalInvoiced;
+
+  const saveHours = async () => {
+    const hours = parseFloat(hoursInput);
+    if(!(hours>0)){ alert("Enter a positive number of hours."); return; }
+    setSavingHours(true);
+    try{
+      if(billingSettings){
+        await sb.update("maintenance_billing_settings", billingSettings.id, {standard_hours_per_month:hours, updated_at:new Date().toISOString()});
+        setBillingSettings(s=>({...s, standard_hours_per_month:hours}));
+      }else{
+        const row = {id:uid(), company_id:companyId, standard_hours_per_month:hours};
+        await sb.insert("maintenance_billing_settings", row);
+        setBillingSettings(row);
+      }
+    }catch(e){ alert("Could not save: "+e.message); }
+    finally{ setSavingHours(false); }
+  };
+
+  const byLocation = useMemo(()=>{
+    const m = {};
+    LOCATIONS.forEach(l=>{ m[l.id] = {id:l.id, name:l.name, total:0, labor:0, material:0, jobs:0}; });
+    monthInvoices.forEach(inv=>{
+      const k = inv.location_id;
+      if(!m[k]) m[k] = {id:k, name:k, total:0, labor:0, material:0, jobs:0};
+      m[k].total += inv.total_cost; m[k].labor += inv.labor_cost; m[k].material += inv.material_cost; m[k].jobs += 1;
+    });
+    return Object.values(m).sort((a,b)=>b.total-a.total);
+  },[monthInvoices]);
+
+  const byDestination = useMemo(()=>{
+    const m = {};
+    monthInvoices.forEach(inv=>{
+      const k = inv.destination_id || `name:${inv.dest_name||"Unassigned"}`;
+      if(!m[k]) m[k] = {id:inv.destination_id, name:inv.dest_name||"Unassigned", total:0, labor:0, material:0, jobs:0};
+      m[k].total += inv.total_cost; m[k].labor += inv.labor_cost; m[k].material += inv.material_cost; m[k].jobs += 1;
+    });
+    return Object.values(m).sort((a,b)=>b.total-a.total);
+  },[monthInvoices]);
+
+  const sortedInvoices = useMemo(()=>
+    [...monthInvoices].sort((a,b)=>{
+      const da=parseDMY(a.completed_date), db=parseDMY(b.completed_date);
+      return (db?db.getTime():0)-(da?da.getTime():0);
+    })
+  ,[monthInvoices]);
+
+  const viewLines = async (inv) => {
+    setOpenInvoice(inv); setLoadingLines(true);
+    try{
+      const rows = await sb.select("maint_job_invoice_labor_lines", `invoice_id=eq.${inv.id}&company_id=eq.${companyId}`);
+      setLaborLines(rows.map(r=>({...r,hours:+r.hours,hourly_rate:+r.hourly_rate,line_cost:+r.line_cost})));
+    }catch(e){ alert("Could not load labor detail: "+e.message); setLaborLines([]); }
+    finally{ setLoadingLines(false); }
+  };
+
+  return (<>
+    <div style={{fontSize:12,color:T.muted,marginBottom:16,lineHeight:1.6}}>
+      Every completed job is automatically billed back to its lodge/destination at cost —
+      material at weighted average, labor at each employee's own real loaded hourly rate.
+      This is an internal accounting view only; no real payments move.
+    </div>
+
+    <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14,flexWrap:"wrap"}}>
+      <label style={{fontSize:11,color:T.muted,textTransform:"uppercase",letterSpacing:".08em"}}>Month</label>
+      <input type="month" value={month} onChange={e=>setMonth(e.target.value)}
+        style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:6,color:T.cream,fontFamily:"'Space Mono'",fontSize:13,padding:"6px 10px"}}/>
+      <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8}}>
+        <label style={{fontSize:11,color:T.muted,textTransform:"uppercase",letterSpacing:".08em"}}>Standard Hours/Month</label>
+        <input type="number" inputMode="decimal" value={hoursInput} onChange={e=>setHoursInput(e.target.value)}
+          style={{width:70,background:T.panel,border:`1px solid ${T.border}`,borderRadius:6,color:T.cream,fontFamily:"'Space Mono'",fontSize:13,padding:"6px 8px"}}/>
+        <button className="btn btn-ghost" disabled={savingHours} onClick={saveHours}>{savingHours?"Saving…":"Save"}</button>
+      </div>
+    </div>
+
+    <div className="strip" style={{marginBottom:14}}>
+      <div className="strip-item"><div className="strip-label">Invoiced (Revenue)</div>
+        <div className="strip-val" style={{color:T.ok}}>{fmtR(totalInvoiced)}</div></div>
+      <div className="strip-item"><div className="strip-label">Department Cost (Full)</div>
+        <div className="strip-val" style={{color:T.warn}}>{deptCostFull==null?(deptCostErr?"—":"…"):fmtR(deptCostFull)}</div>
+        <div style={{fontSize:10,color:T.muted,marginTop:2}}>All active staff + material used</div></div>
+      <div className="strip-item"><div className="strip-label">Gap (Unbilled Capacity)</div>
+        <div className="strip-val" style={{color:gap==null?T.muted:gap>0?T.danger:T.ok}}>{gap==null?"—":fmtR(gap)}</div>
+        <div style={{fontSize:10,color:T.muted,marginTop:2}}>{gap==null?"":gap>0?"Idle/unbilled labor cost":"Fully recovered"}</div></div>
+      <div className="strip-item"><div className="strip-label">Jobs Invoiced</div>
+        <div className="strip-val">{monthInvoices.length}</div></div>
+    </div>
+    {deptCostErr && (
+      <div style={{fontSize:11,color:T.warn,marginBottom:14}}>
+        Could not load department cost ({deptCostErr}). This usually means the internal invoicing SQL hasn't been run in Supabase yet.
+      </div>
+    )}
+
+    <div style={{fontSize:11,letterSpacing:".08em",textTransform:"uppercase",color:T.gold,fontWeight:700,margin:"18px 0 8px"}}>By Location</div>
+    <div className="tbl-wrap"><table className="tbl">
+      <thead><tr><th>Location</th><th className="num">Jobs</th><th className="num">Labor</th><th className="num">Material</th><th className="num">Total Invoiced</th></tr></thead>
+      <tbody>
+        {byLocation.map(r=>(
+          <tr key={r.id}>
+            <td style={{fontWeight:600}}>{LOCATIONS.find(l=>l.id===r.id)?.name || r.name}</td>
+            <td className="num" style={{color:T.muted}}>{r.jobs||"—"}</td>
+            <td className="num" style={{color:T.muted}}>{r.labor>0?fmtR(r.labor):"—"}</td>
+            <td className="num" style={{color:T.muted}}>{r.material>0?fmtR(r.material):"—"}</td>
+            <td className="num" style={{fontWeight:700,color:r.total>0?T.gold:T.border}}>{r.total>0?fmtR(r.total):"—"}</td>
+          </tr>
+        ))}
+        {byLocation.length===0 && <tr><td colSpan={5} className="empty">No invoices yet this month</td></tr>}
+      </tbody>
+    </table></div>
+
+    <div style={{fontSize:11,letterSpacing:".08em",textTransform:"uppercase",color:T.gold,fontWeight:700,margin:"18px 0 8px"}}>By Destination</div>
+    <div className="tbl-wrap"><table className="tbl">
+      <thead><tr><th>Destination</th><th className="num">Jobs</th><th className="num">Labor</th><th className="num">Material</th><th className="num">Total Invoiced</th></tr></thead>
+      <tbody>
+        {byDestination.map(r=>(
+          <tr key={r.id||r.name}>
+            <td style={{fontWeight:600}}>{r.name}</td>
+            <td className="num" style={{color:T.muted}}>{r.jobs||"—"}</td>
+            <td className="num" style={{color:T.muted}}>{r.labor>0?fmtR(r.labor):"—"}</td>
+            <td className="num" style={{color:T.muted}}>{r.material>0?fmtR(r.material):"—"}</td>
+            <td className="num" style={{fontWeight:700,color:r.total>0?T.gold:T.border}}>{r.total>0?fmtR(r.total):"—"}</td>
+          </tr>
+        ))}
+        {byDestination.length===0 && <tr><td colSpan={5} className="empty">No invoices yet this month</td></tr>}
+      </tbody>
+    </table></div>
+
+    <div style={{fontSize:11,letterSpacing:".08em",textTransform:"uppercase",color:T.gold,fontWeight:700,margin:"18px 0 8px"}}>Job Invoices</div>
+    <div className="tbl-wrap"><table className="tbl">
+      <thead><tr><th>Completed</th><th>Job</th><th>Destination</th><th className="num">Labor</th><th className="num">Material</th><th className="num">Total</th><th></th></tr></thead>
+      <tbody>
+        {sortedInvoices.map(inv=>(
+          <tr key={inv.id}>
+            <td className="mono" style={{fontSize:11}}>{inv.completed_date}</td>
+            <td style={{fontWeight:600}}>{inv.job_name}</td>
+            <td style={{fontSize:12,color:T.muted}}>{inv.dest_name||"—"}</td>
+            <td className="num" style={{color:T.muted}}>{fmtR(inv.labor_cost)}</td>
+            <td className="num" style={{color:T.muted}}>{fmtR(inv.material_cost)}</td>
+            <td className="num" style={{fontWeight:700,color:T.gold}}>{fmtR(inv.total_cost)}</td>
+            <td>
+              <button onClick={()=>viewLines(inv)}
+                style={{background:"none",border:`1px solid ${T.border}`,borderRadius:5,color:T.muted,fontSize:11,cursor:"pointer",padding:"3px 9px"}}>
+                Labor
+              </button>
+            </td>
+          </tr>
+        ))}
+        {sortedInvoices.length===0 && <tr><td colSpan={7} className="empty">No jobs invoiced this month</td></tr>}
+      </tbody>
+    </table></div>
+
+    {openInvoice && (
+      <div className="overlay" onClick={e=>e.target===e.currentTarget&&setOpenInvoice(null)}>
+        <div className="modal">
+          <div className="modal-title">Labor <span>{openInvoice.job_name}</span></div>
+          {loadingLines ? (
+            <div style={{fontSize:12,color:T.muted}}>Loading…</div>
+          ) : (
+            <div className="tbl-wrap"><table className="tbl" style={{minWidth:0}}>
+              <thead><tr><th>Employee</th><th className="num">Hours</th><th className="num">Rate/hr</th><th className="num">Cost</th></tr></thead>
+              <tbody>
+                {laborLines.map(l=>(
+                  <tr key={l.id}>
+                    <td style={{fontWeight:600}}>{l.employee_name}</td>
+                    <td className="num">{fmtN(l.hours)}</td>
+                    <td className="num" style={{color:T.muted}}>{fmtR(l.hourly_rate)}</td>
+                    <td className="num" style={{fontWeight:700,color:T.gold}}>{fmtR(l.line_cost)}</td>
+                  </tr>
+                ))}
+                {laborLines.length===0 && <tr><td colSpan={4} className="empty">No labor lines found</td></tr>}
+              </tbody>
+            </table></div>
+          )}
+          <div style={{display:"flex",gap:9,marginTop:16}}>
+            <button className="btn btn-ghost" onClick={()=>setOpenInvoice(null)}>Close</button>
+          </div>
+        </div>
+      </div>
+    )}
   </>);
 }
 
@@ -3496,12 +3821,12 @@ function EditLogForm({ log, workstream, setProgressLogs, refreshWorkstreamStatus
         <div className="modal-title">Edit Log <span>{workstream.name}</span></div>
         <div className="grid2">
           <div className="field"><label>Week Ending</label><input type="date" value={form.week_ending} onChange={f("week_ending")}/></div>
-          <div className="field"><label>Crew Size</label><input type="number" value={form.crew_size} onChange={f("crew_size")}/></div>
+          <div className="field"><label>Crew Size</label><input type="number" inputMode="decimal" value={form.crew_size} onChange={f("crew_size")}/></div>
         </div>
         <div className="grid2">
           <div className="field"><label>Qty Done This Week ({WORKSTREAM_UNIT_LABEL[workstream.unit]})</label>
-            <input type="number" step="0.01" value={form.qty_done} onChange={f("qty_done")}/></div>
-          <div className="field"><label>Cost Incurred (R)</label><input type="number" step="0.01" value={form.cost_incurred} onChange={f("cost_incurred")}/></div>
+            <input type="number" inputMode="decimal" step="0.01" value={form.qty_done} onChange={f("qty_done")}/></div>
+          <div className="field"><label>Cost Incurred (R)</label><input type="number" inputMode="decimal" step="0.01" value={form.cost_incurred} onChange={f("cost_incurred")}/></div>
         </div>
         <div className="field"><label>Notes</label><input type="text" value={form.notes} onChange={f("notes")}/></div>
         <div style={{display:"flex",gap:9}}>
@@ -3597,8 +3922,8 @@ function WeeklyLogForm({ workstream, project, items, companyId, hrEmployees, set
 
         <div className="grid2">
           <div className="field"><label>Qty Done ({WORKSTREAM_UNIT_LABEL[workstream.unit]})</label>
-            <input type="number" step="0.01" value={form.qty_done} onChange={f("qty_done")}/></div>
-          <div className="field"><label>Cost Incurred (R, optional)</label><input type="number" step="0.01" value={form.cost_incurred} onChange={f("cost_incurred")}/></div>
+            <input type="number" inputMode="decimal" step="0.01" value={form.qty_done} onChange={f("qty_done")}/></div>
+          <div className="field"><label>Cost Incurred (R, optional)</label><input type="number" inputMode="decimal" step="0.01" value={form.cost_incurred} onChange={f("cost_incurred")}/></div>
         </div>
 
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
@@ -3623,7 +3948,7 @@ function WeeklyLogForm({ workstream, project, items, companyId, hrEmployees, set
                   style={{flex:1}}
                   inputStyle={{...searchSelectInput,padding:"9px 10px",fontSize:14}}
                 />
-                <input className="count-input" type="number" placeholder="Qty" value={m.qty}
+                <input className="count-input" type="number" inputMode="decimal" placeholder="Qty" value={m.qty}
                   onChange={e=>updMaterial(i,"qty",e.target.value)}/>
                 <button className="btn btn-danger btn-sm" onClick={()=>removeMaterial(i)}>x</button>
               </div>
@@ -3697,16 +4022,16 @@ function EditWorkstreamForm({ workstream, setWorkstreams, refreshWorkstreamStatu
           </div>
         </div>
         <div className="grid2">
-          <div className="field"><label>Target Qty</label><input type="number" step="0.01" value={form.target_qty} onChange={f("target_qty")}/></div>
-          <div className="field"><label>Baseline Qty</label><input type="number" step="0.01" value={form.baseline_qty} onChange={f("baseline_qty")}/></div>
+          <div className="field"><label>Target Qty</label><input type="number" inputMode="decimal" step="0.01" value={form.target_qty} onChange={f("target_qty")}/></div>
+          <div className="field"><label>Baseline Qty</label><input type="number" inputMode="decimal" step="0.01" value={form.baseline_qty} onChange={f("baseline_qty")}/></div>
         </div>
         <div className="grid2">
           <div className="field"><label>Baseline Date</label><input type="date" value={form.baseline_date||""} onChange={f("baseline_date")}/></div>
-          <div className="field"><label>Budget Cost (R, optional)</label><input type="number" step="0.01" value={form.budget_cost} onChange={f("budget_cost")}/></div>
+          <div className="field"><label>Budget Cost (R, optional)</label><input type="number" inputMode="decimal" step="0.01" value={form.budget_cost} onChange={f("budget_cost")}/></div>
         </div>
         <div className="field"><label>Your Estimate (optional)</label>
           <div style={{display:"flex",gap:8}}>
-            <input type="number" step="0.5" placeholder="e.g. 10" style={{flex:1}} value={form.estimate_value} onChange={f("estimate_value")}/>
+            <input type="number" inputMode="decimal" step="0.5" placeholder="e.g. 10" style={{flex:1}} value={form.estimate_value} onChange={f("estimate_value")}/>
             <select value={form.estimate_unit} onChange={f("estimate_unit")} style={{flex:"0 0 110px"}}>
               <option value="weeks">weeks</option>
               <option value="days">days</option>
@@ -3761,16 +4086,16 @@ function NewWorkstreamForm({ project, companyId, setWorkstreams, refreshWorkstre
               {["km","m","percent"].map(u=><option key={u} value={u}>{WORKSTREAM_UNIT_LABEL[u]}</option>)}
             </select>
           </div>
-          <div className="field"><label>Target Qty</label><input type="number" step="0.01" value={form.target_qty} onChange={f("target_qty")}/></div>
+          <div className="field"><label>Target Qty</label><input type="number" inputMode="decimal" step="0.01" value={form.target_qty} onChange={f("target_qty")}/></div>
         </div>
         <div className="grid2">
-          <div className="field"><label>Baseline Qty</label><input type="number" step="0.01" value={form.baseline_qty} onChange={f("baseline_qty")}/></div>
+          <div className="field"><label>Baseline Qty</label><input type="number" inputMode="decimal" step="0.01" value={form.baseline_qty} onChange={f("baseline_qty")}/></div>
           <div className="field"><label>Baseline Date</label><input type="date" value={form.baseline_date} onChange={f("baseline_date")}/></div>
         </div>
-        <div className="field"><label>Budget Cost (R, optional)</label><input type="number" step="0.01" value={form.budget_cost} onChange={f("budget_cost")}/></div>
+        <div className="field"><label>Budget Cost (R, optional)</label><input type="number" inputMode="decimal" step="0.01" value={form.budget_cost} onChange={f("budget_cost")}/></div>
         <div className="field"><label>Your Estimate (optional)</label>
           <div style={{display:"flex",gap:8}}>
-            <input type="number" step="0.5" placeholder="e.g. 10" style={{flex:1}} value={form.estimate_value} onChange={f("estimate_value")}/>
+            <input type="number" inputMode="decimal" step="0.5" placeholder="e.g. 10" style={{flex:1}} value={form.estimate_value} onChange={f("estimate_value")}/>
             <select value={form.estimate_unit} onChange={f("estimate_unit")} style={{flex:"0 0 110px"}}>
               <option value="weeks">weeks</option>
               <option value="days">days</option>
@@ -3797,6 +4122,7 @@ const PAGES=[
   {id:"count",       label:"Stock Count",  section:"Stock",      adminOnly:false},
   {id:"orders",      label:"Orders",       section:"Stock",      adminOnly:false},
   {id:"destcosts",   label:"Destination Costs", section:"Stock", adminOnly:false},
+  {id:"billing",     label:"Internal Billing", section:"Management", adminOnly:true},
   {id:"items",       label:"Stock Items",  section:"Management", adminOnly:true},
   {id:"destinations",label:"Destinations", section:"Management", adminOnly:true},
 ];
@@ -3863,6 +4189,13 @@ function AuthenticatedApp() {
   const [allData,       setAllData]      = useState({items:{},purchases:{},issues:{},counts:{},destinations:{},jobs:{},templates:{}});
   const [jobMaterials,     setJobMaterials]     = useState([]);
   const [templateMaterials,setTemplateMaterials]= useState([]);
+  // Internal Invoicing (2026-08-26) — company-wide job invoices (one per
+  // completed job, billed to its lodge/destination at cost) and the single
+  // per-company settings row controlling the hourly-rate divisor. Same
+  // "company-wide, not per-location" reasoning as jobMaterials/projects
+  // above — see InternalBilling page + generateJobInvoice().
+  const [jobInvoices,      setJobInvoices]      = useState([]);
+  const [billingSettings,  setBillingSettings]  = useState(null);
   // Projects (2026-08-19) — company-wide, not per-location like allData,
   // same reasoning as jobMaterials/templateMaterials above: these are
   // joined by project_id/workstream_id, not location_id.
@@ -3903,7 +4236,8 @@ function AuthenticatedApp() {
       const cf = `company_id=eq.${companyId}`;
       const[itemRows,purchRows,issueRows,countRows,destRows,jobRows,tplRows,jobMatRows,tplMatRows,slipRows,
             projectRows,workstreamRows,workstreamStatusRows,progressLogRows,progressMatRows,progressCrewRows,
-            hrEmployeeRows,hrScheduleLocationRows,hrLeaveRows,creditNoteRows]=await Promise.all([
+            hrEmployeeRows,hrScheduleLocationRows,hrLeaveRows,creditNoteRows,
+            jobInvoiceRows,billingSettingsRows]=await Promise.all([
         sb.select("maint_items", `active=eq.true&${cf}&order=sort_order.asc`),
         sb.select("maint_purchases", cf),
         sb.select("maint_issues", cf),
@@ -3924,6 +4258,8 @@ function AuthenticatedApp() {
         sb.select("hr_schedule_locations", cf),
         sb.select("hr_leave", cf),
         sb.select("supplier_credit_notes", `app=eq.maintenance&${cf}`),
+        sb.select("maint_job_invoices", cf).catch(()=>[]),
+        sb.select("maintenance_billing_settings", cf).catch(()=>[]),
       ]);
       const slipMap={}; (slipRows||[]).forEach(s=>{slipMap[s.id]=s;});
       setSlips(slipMap);
@@ -3952,6 +4288,8 @@ function AuthenticatedApp() {
       setHrEmployees(hrEmployeeRows);
       setHrScheduleLocations(hrScheduleLocationRows);
       setHrLeave(hrLeaveRows);
+      setJobInvoices((jobInvoiceRows||[]).map(r=>({...r,labor_cost:+r.labor_cost,material_cost:+r.material_cost,total_cost:+r.total_cost})));
+      setBillingSettings((billingSettingsRows||[])[0]||null);
     }catch(e){setLoadErr(e.message);}
     finally{setLoading(false);}
   },[companyId]);
@@ -4188,6 +4526,8 @@ function AuthenticatedApp() {
                                        hrEmployees={hrEmployees} hrScheduleLocations={hrScheduleLocations} hrLeave={hrLeave}
                                        itemsByLoc={allData.items}
                                        isAdmin={isAdmin} companyId={companyId}/>}
+          {page==="billing"      && isAdmin && <InternalBillingPage invoices={jobInvoices} billingSettings={billingSettings}
+                                       setBillingSettings={setBillingSettings} companyId={companyId}/>}
           {page==="templates"    && isAdmin && <JobTemplates locId={locId} templates={templates} setTemplates={setTemplates}
                                        templateMaterials={templateMaterials} setTemplateMaterials={setTemplateMaterials}
                                        items={items} destinations={allDests} jobs={jobs} setJobs={setJobs}
