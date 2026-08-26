@@ -69,9 +69,45 @@ export const sb = {
   },
 }
 
-export const LOCATIONS = [
-  { id: 'ZC', name: 'Zebras Crossing' },
-  { id: 'EC', name: 'Elephants Crossing' },
-  { id: 'SC', name: 'Schamach' },
-]
-export const LOC_COLORS = { ZC: '#B8935A', EC: '#5B8CC4', SC: '#7BAE7F' }
+// Lodges for the current company. Loaded from the shared `locations` table
+// at login (see CompanyContext.jsx) instead of being hardcoded, so a second
+// company's own lodges work without a code change (2026-08-26).
+//
+// Deliberately a MUTABLE module array rather than React state: this app
+// already reads LOCATIONS synchronously in a number of places, some outside
+// components, and converting every one to a hook would be a large change for
+// no visible benefit today. CompanyContext fills this in BEFORE it renders
+// any children, and refills it on company switch, so by the time anything
+// reads it, it's correct. The array identity never changes — contents are
+// replaced in place — so existing dependency arrays keep behaving as before.
+export const LOCATIONS = []
+
+// Only 'lodge' rows: the shared locations table also holds an 'overhead'
+// (head office) row that the Finance Dashboard uses for non-lodge costs and
+// that this app has never shown. Ordering is by created_at, not id, because
+// the established display order is ZC, EC, SC — which alphabetical order
+// would reshuffle to EC, SC, ZC.
+export function setLocations(rows) {
+  LOCATIONS.length = 0
+  for (const r of rows || []) {
+    if (r.type && r.type !== 'lodge') continue
+    LOCATIONS.push({ id: r.id, name: r.name, type: r.type ?? null })
+  }
+  refreshLocColors()
+}
+
+// Per-lodge accent colours. Previously a hardcoded { ZC: ..., EC: ..., SC: ... }
+// map; now assigned by position from a fixed palette so any lodge list works.
+// The first three palette entries are the exact colours ZC/EC/SC have always
+// had, and setLocations preserves their order, so nothing changes visually.
+const LOC_PALETTE = ['#B8935A', '#5B8CC4', '#7BAE7F', '#C4795B', '#8C7BC4', '#C4B45B', '#5BC4B4']
+
+
+export const LOC_COLORS = {}
+
+function refreshLocColors() {
+  for (const k of Object.keys(LOC_COLORS)) delete LOC_COLORS[k]
+  LOCATIONS.forEach((l, i) => {
+    LOC_COLORS[l.id] = LOC_PALETTE[i % LOC_PALETTE.length]
+  })
+}

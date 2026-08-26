@@ -4534,6 +4534,15 @@ function AuthenticatedApp() {
 
   const [page,          setPage]         = useState("dashboard");
   const [locId,         setLocId]        = useState("ZC");
+  // 'ZC' is only a first guess: this state initialises before the lodge list
+  // has loaded (CompanyContext fetches it), and another company won't have a
+  // lodge called ZC at all. Once LOCATIONS is populated — and again whenever
+  // it changes on a company switch — snap to the first real lodge if the
+  // current pick isn't in the list (2026-08-26).
+  useEffect(() => {
+    if (LOCATIONS.length === 0) return
+    if (!LOCATIONS.some((l) => l.id === locId)) setLocId(LOCATIONS[0].id)
+  }, [companyId, locId])
   const [locPickerOpen, setLocPickerOpen]= useState(false);
   const [menuOpen,      setMenuOpen]     = useState(false);
   const [allData,       setAllData]      = useState({items:{},purchases:{},issues:{},counts:{},destinations:{},jobs:{},templates:{}});
