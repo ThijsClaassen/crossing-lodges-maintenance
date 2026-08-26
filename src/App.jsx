@@ -3341,10 +3341,23 @@ function ProjectsPage({ locId, projects, workstreams, workstreamStatus, progress
   const [locFilter, setLocFilter] = useState("all");
   const [openProjectId, setOpenProjectId] = useState(null);
   const [showNewProject, setShowNewProject] = useState(false);
+  // Completed projects (2026-08-26, Thijs: "it must go somewhere... but I
+  // also don't want to keep it as a long list with all old projects among
+  // the scheduled and active ones") — never deleted (historical cost/labor
+  // data stays intact), just hidden from the default list by default. Uses
+  // the existing projects.status==="complete" (already settable via the
+  // Status dropdown in ProjectDetail) rather than inventing a new field.
+  const [showCompleted, setShowCompleted] = useState(false);
 
-  const visibleProjects = useMemo(()=>
+  const locScoped = useMemo(()=>
     locFilter==="all" ? projects : projects.filter(p=>p.location_id===locFilter)
   ,[projects, locFilter]);
+  const visibleProjects = useMemo(()=>
+    showCompleted ? locScoped : locScoped.filter(p=>p.status!=="complete")
+  ,[locScoped, showCompleted]);
+  const completedCount = useMemo(()=>
+    locScoped.filter(p=>p.status==="complete").length
+  ,[locScoped]);
 
   const statusByWsId = useMemo(()=>{
     const m={}; workstreamStatus.forEach(s=>{m[s.id]=s;}); return m;
@@ -3383,6 +3396,11 @@ function ProjectsPage({ locId, projects, workstreams, workstreamStatus, progress
           <option value="all">All Locations</option>
           {LOCATIONS.map(l=><option key={l.id} value={l.id}>{l.name}</option>)}
         </select>
+        {completedCount>0 && (
+          <button className="btn btn-ghost" onClick={()=>setShowCompleted(v=>!v)}>
+            {showCompleted ? "Hide Completed" : `Show Completed (${completedCount})`}
+          </button>
+        )}
         {isAdmin && <button className="btn btn-primary" onClick={()=>setShowNewProject(true)}>+ New Project</button>}
       </div>
     </div>
@@ -3741,13 +3759,22 @@ function WorkstreamSuggestions({ project, workstreams, statusByWsId, hrEmployees
             estimateNote = `You estimated ~${fmtN(estimateDisplay)} ${estimateUnitLabel}` +
               (s.estimated_finish_date?` (around ${s.estimated_finish_date}).`:".") + comparison;
           }
+          // Same fix as ProjectDetail's table: the live view's own status
+          // never returns "complete" (remaining<=0 maps to 'on_track'), so
+          // a workstream sitting at target but not yet closed needs its own
+          // override here too.
+          const atTarget = s.remaining!=null && Number(s.remaining)<=0;
           return (
             <div key={w.id} style={{background:"rgba(0,0,0,.2)",border:`1px solid ${T.border}`,borderRadius:8,padding:"12px 14px"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
                 <div style={{fontWeight:600,color:T.cream}}>{w.name}</div>
-                <span className="badge" style={{background:`${statusBadgeColor(s.status)}22`,color:statusBadgeColor(s.status),border:`1px solid ${statusBadgeColor(s.status)}55`}}>
-                  {statusBadgeLabel(s.status)}
-                </span>
+                {atTarget ? (
+                  <span className="badge" style={{background:`${T.gold}22`,color:T.gold,border:`1px solid ${T.gold}55`}}>Complete</span>
+                ) : (
+                  <span className="badge" style={{background:`${statusBadgeColor(s.status)}22`,color:statusBadgeColor(s.status),border:`1px solid ${statusBadgeColor(s.status)}55`}}>
+                    {statusBadgeLabel(s.status)}
+                  </span>
+                )}
               </div>
               {!hasLogs ? (
                 <div style={{fontSize:12,color:T.muted}}>No progress logged yet — nothing to compare against.</div>
