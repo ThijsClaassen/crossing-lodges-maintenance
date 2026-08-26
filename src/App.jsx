@@ -3495,7 +3495,8 @@ function statusBadgeLabel(s) {
 
 function ProjectsPage({ locId, projects, workstreams, workstreamStatus, progressLogs,
                          progressMaterials, setProgressMaterials, progressCrew, setProgressCrew,
-                         setProjects, setWorkstreams, setProgressLogs, refreshWorkstreamStatus,
+                         setProjects, setWorkstreams, setProgressLogs, setProjectInvoices,
+                         onIssuesRemoved, refreshWorkstreamStatus,
                          hrEmployees, hrScheduleLocations, hrLeave, itemsByLoc, purchasesByLoc, isAdmin, companyId }) {
   const [locFilter, setLocFilter] = useState("all");
   const [openProjectId, setOpenProjectId] = useState(null);
@@ -3535,6 +3536,7 @@ function ProjectsPage({ locId, projects, workstreams, workstreamStatus, progress
         progressMaterials={progressMaterials} setProgressMaterials={setProgressMaterials}
         progressCrew={progressCrew} setProgressCrew={setProgressCrew}
         setWorkstreams={setWorkstreams} setProgressLogs={setProgressLogs}
+        setProjectInvoices={setProjectInvoices} onIssuesRemoved={onIssuesRemoved}
         setProjects={setProjects} refreshWorkstreamStatus={refreshWorkstreamStatus}
         hrEmployees={hrEmployees} hrScheduleLocations={hrScheduleLocations} hrLeave={hrLeave}
         items={itemsByLoc[openProject.location_id]||[]}
@@ -3683,7 +3685,7 @@ function NewProjectForm({ locId, companyId, setProjects, onClose }) {
 }
 
 function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, progressMaterials, setProgressMaterials,
-                          progressCrew, setProgressCrew,
+                          progressCrew, setProgressCrew, setProjectInvoices, onIssuesRemoved,
                           setWorkstreams, setProgressLogs, setProjects, refreshWorkstreamStatus,
                           hrEmployees, hrScheduleLocations, hrLeave, items, purchases, isAdmin, companyId, onBack }) {
   const [logFor, setLogFor] = useState(null);
@@ -3853,8 +3855,10 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, progr
     )}
     {historyFor && (
       <WorkstreamLogHistory workstream={historyFor} progressLogs={progressLogs} setProgressLogs={setProgressLogs}
-        progressMaterials={progressMaterials} progressCrew={progressCrew} items={items}
-        refreshWorkstreamStatus={refreshWorkstreamStatus} isAdmin={isAdmin}
+        progressMaterials={progressMaterials} setProgressMaterials={setProgressMaterials}
+        progressCrew={progressCrew} setProgressCrew={setProgressCrew}
+        setProjectInvoices={setProjectInvoices} onIssuesRemoved={onIssuesRemoved} items={items}
+        refreshWorkstreamStatus={refreshWorkstreamStatus} isAdmin={isAdmin} companyId={companyId}
         onClose={()=>setHistoryFor(null)}/>
     )}
   </>);
@@ -3938,7 +3942,17 @@ function WorkstreamSuggestions({ project, workstreams, statusByWsId, hrEmployees
               </div>
               {!hasLogs ? (
                 <div style={{fontSize:12,color:T.muted}}>No progress logged yet — nothing to compare against.</div>
-              ) : (<>
+              ) : atTarget ? (<>
+                {/* Target reached — pace advice is meaningless now, and the
+                    live view would otherwise still say "on track" here
+                    (remaining<=0 maps to 'on_track'), which read as a
+                    contradiction next to the gold Complete badge. */}
+                {estimateNote && <div style={{fontSize:12,color:T.muted,marginBottom:4}}>{estimateNote}</div>}
+                <div style={{fontSize:12,color:T.gold}}>
+                  &#10003; Target reached — {fmtQty(s.cumulative_done, w.unit)} of {fmtQty(w.target_qty, w.unit)}.
+                  {w.status!=="complete" && " Close it out from the workstream list when you're happy it's done."}
+                </div>
+              </>) : (<>
                 {estimateNote && <div style={{fontSize:12,color:T.muted,marginBottom:4}}>{estimateNote}</div>}
                 {s.status==="behind" && s.suggested_crew_size!=null && (() => {
                   const short = s.suggested_crew_size > staffToday.count;
@@ -3972,7 +3986,7 @@ function WorkstreamSuggestions({ project, workstreams, statusByWsId, hrEmployees
 // per entry — lets Thijs correct or remove data his employees logged
 // (e.g. a mistaken week or a test entry), which the "+ Log" flow itself
 // deliberately doesn't expose since it's meant to stay a quick weekly form.
-function WorkstreamLogHistory({ workstream, progressLogs, setProgressLogs, progressMaterials, progressCrew, items, refreshWorkstreamStatus, isAdmin, onClose }) {
+function WorkstreamLogHistory({ workstream, progressLogs, setProgressLogs, progressMaterials, setProgressMaterials, progressCrew, setProgressCrew, setProjectInvoices, onIssuesRemoved, items, refreshWorkstreamStatus, isAdmin, companyId, onClose }) {
   const [editLog, setEditLog] = useState(null);
   const logs = progressLogs.filter(l=>l.workstream_id===workstream.id).sort((a,b)=>b.week_ending.localeCompare(a.week_ending));
   const materialsFor = logId => (progressMaterials||[])
@@ -3987,12 +4001,42 @@ function WorkstreamLogHistory({ workstream, progressLogs, setProgressLogs, progr
     .map(c=>c.is_casual?`${c.worker_name} (casual)`:c.worker_name)
     .join(", ");
 
+  // Deleting a log also has to put back the stock it issued (2026-08-26
+  // inspection finding 1.3). The DB cascades the log's crew/materials/
+  // invoice rows away, but the maint_issues rows created when that stock
+  // was pulled are a separate ledger — before maint_issues.progress_log_id
+  // existed they had no link back at all, so deleting a log silently left
+  // stock deducted with nothing to explain it. Issues written since that
+  // column exists are found and removed here; older ones can't be matched
+  // reliably, so the user is told rather than guessed at.
   const remove = async (log) => {
-    if (!window.confirm(`Delete the log for week ending ${log.week_ending}?`)) return;
+    const mats = (progressMaterials||[]).filter(m=>m.progress_log_id===log.id);
+    const matNote = mats.length
+      ? `\n\nThis will also reverse the ${mats.length} stock issue${mats.length===1?"":"s"} logged against it.`
+      : "";
+    if (!window.confirm(`Delete the log for week ending ${log.week_ending}?${matNote}`)) return;
     try {
+      let staleIssues = 0;
+      if (mats.length) {
+        const linked = await sb.select("maint_issues", `progress_log_id=eq.${log.id}&company_id=eq.${companyId}`);
+        for (const iss of linked||[]) await sb.delete("maint_issues", iss.id);
+        // Location-aware: the global setIssues() writes to whatever lodge
+        // the top-of-page switcher is on, but Projects has its own filter,
+        // so this has to target the PROJECT's lodge explicitly.
+        if (linked?.length) onIssuesRemoved?.(linked.map(i=>i.id), linked[0].location_id);
+        staleIssues = mats.length - (linked?.length||0);
+      }
       await sb.delete("project_progress_logs", log.id);
+      // Mirror the DB's own cascades in local state so the UI doesn't keep
+      // showing crew/material/invoice rows for a log that no longer exists.
       setProgressLogs(p=>p.filter(l=>l.id!==log.id));
+      setProgressMaterials?.(p=>p.filter(m=>m.progress_log_id!==log.id));
+      setProgressCrew?.(p=>p.filter(c=>c.progress_log_id!==log.id));
+      setProjectInvoices?.(p=>p.filter(i=>i.progress_log_id!==log.id));
       await refreshWorkstreamStatus?.();
+      if (staleIssues > 0) {
+        alert(`Log deleted. Note: ${staleIssues} of its stock issue${staleIssues===1?" was":"s were"} logged before issues were linked to progress logs, so ${staleIssues===1?"it":"they"} could not be reversed automatically — reverse ${staleIssues===1?"it":"them"} by hand on the Issues page if needed.`);
+      }
     } catch(e) { alert("Error: "+e.message); }
   };
 
@@ -4028,12 +4072,13 @@ function WorkstreamLogHistory({ workstream, progressLogs, setProgressLogs, progr
     </div>
     {editLog && (
       <EditLogForm log={editLog} workstream={workstream} setProgressLogs={setProgressLogs}
+        setProjectInvoices={setProjectInvoices} companyId={companyId}
         refreshWorkstreamStatus={refreshWorkstreamStatus} onClose={()=>setEditLog(null)}/>
     )}
   </>);
 }
 
-function EditLogForm({ log, workstream, setProgressLogs, refreshWorkstreamStatus, onClose }) {
+function EditLogForm({ log, workstream, setProgressLogs, setProjectInvoices, refreshWorkstreamStatus, companyId, onClose }) {
   const [form, setForm] = useState({
     week_ending: log.week_ending,
     crew_size: log.crew_size==null?"":String(log.crew_size),
@@ -4057,6 +4102,25 @@ function EditLogForm({ log, workstream, setProgressLogs, refreshWorkstreamStatus
       };
       await sb.update("project_progress_logs", log.id, patch);
       setProgressLogs(p=>p.map(l=>l.id===log.id?{...l,...patch}:l));
+
+      // Keep this log's internal invoice in step with the log (2026-08-26
+      // inspection finding 1.2 — editing a log used to leave Internal
+      // Billing showing the OLD date, so an invoice could sit in the wrong
+      // month entirely). Only log_date can drift: this form doesn't touch
+      // crew (labor) or materials, which are what the cost figures are
+      // built from. Best-effort — a log recorded before invoicing existed
+      // simply has no invoice row to update, and a failure here must never
+      // block the edit itself.
+      if (patch.week_ending !== log.week_ending) {
+        try {
+          const invs = await sb.select("project_progress_invoices", `progress_log_id=eq.${log.id}&company_id=eq.${companyId}`);
+          if (invs?.[0]) {
+            await sb.update("project_progress_invoices", invs[0].id, { log_date: patch.week_ending });
+            setProjectInvoices?.(p=>p.map(i=>i.id===invs[0].id?{...i, log_date:patch.week_ending}:i));
+          }
+        } catch(e) { console.error("Could not re-date progress invoice for log", log.id, e); }
+      }
+
       await refreshWorkstreamStatus?.();
       onClose();
     } catch(e) { alert("Save failed: "+e.message); }
@@ -4146,6 +4210,10 @@ function WeeklyLogForm({ workstream, project, items, purchases, companyId, hrEmp
           id: uid(), location_id: project.location_id, item_id: m.item_id, date: form.week_ending,
           qty, destination_id: null, dest_name: null,
           notes: `Project: ${project.name} — ${workstream.name}`,
+          // Hard link back to the log that caused this issue (2026-08-26) —
+          // before this, deleting a log left its stock deducted with only a
+          // free-text note to explain it, and nothing to reverse it by.
+          progress_log_id: ins.id,
           company_id: companyId,
         });
         const pmRow = { id: uid(), progress_log_id: ins.id, item_id: m.item_id, qty, company_id: companyId };
@@ -4604,6 +4672,15 @@ function AuthenticatedApp() {
   const setItems        = mkSetter("items");
   const setPurchases    = mkSetter("purchases");
   const setIssues       = mkSetter("issues");
+  // Location-targeted issue removal (2026-08-26) — mkSetter above always
+  // writes to whatever lodge the global switcher is on, but Projects has
+  // its own independent location filter, so deleting a progress log's
+  // stock issues has to name the lodge explicitly instead.
+  const removeIssuesAtLocation = (issueIds, locationId) => {
+    if (!issueIds?.length || !locationId) return;
+    const drop = new Set(issueIds);
+    setAllData(d=>({...d, issues:{...d.issues, [locationId]:(d.issues[locationId]||[]).filter(i=>!drop.has(i.id))}}));
+  };
   const setCounts       = mkSetter("counts");
   const setCreditNotes  = mkSetter("creditNotes");
   const setJobs         = mkSetter("jobs");
@@ -4810,6 +4887,7 @@ function AuthenticatedApp() {
                                        progressMaterials={progressMaterials} setProgressMaterials={setProgressMaterials}
                                        progressCrew={progressCrew} setProgressCrew={setProgressCrew}
                                        setProjects={setProjects} setWorkstreams={setWorkstreams} setProgressLogs={setProgressLogs}
+                                       setProjectInvoices={setProjectInvoices} onIssuesRemoved={removeIssuesAtLocation}
                                        refreshWorkstreamStatus={refreshWorkstreamStatus}
                                        hrEmployees={hrEmployees} hrScheduleLocations={hrScheduleLocations} hrLeave={hrLeave}
                                        itemsByLoc={allData.items} purchasesByLoc={allData.purchases}
