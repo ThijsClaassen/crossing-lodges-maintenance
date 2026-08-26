@@ -3400,10 +3400,20 @@ function ProjectsPage({ locId, projects, workstreams, workstreamStatus, progress
           return Math.max(0, Math.min(1, done/target));
         });
         const pct = fractions.length ? Math.round((fractions.reduce((a,b)=>a+b,0)/fractions.length)*100) : 0;
-        const statuses = ws.map(w=>statusByWsId[w.id]?.status).filter(Boolean);
-        const rollup = statuses.includes("behind") ? "behind"
-          : statuses.includes("on_track") ? "on_track"
-          : statuses.length && statuses.every(s=>s==="complete") ? "complete" : "no_data";
+        // project_workstream_status's own computed status never returns
+        // "complete" (see the comment in WeeklyLogForm.save() /
+        // ProjectDetail) — a workstream counts as complete here once it's
+        // either closed (w.status==="complete") or has reached its target
+        // (remaining<=0) but hasn't been closed yet.
+        const wsEffective = ws.map(w=>{
+          if (w.status==="complete") return "complete";
+          const s = statusByWsId[w.id];
+          if (s && Number(s.remaining)<=0) return "complete";
+          return s?.status || "no_data";
+        });
+        const rollup = wsEffective.includes("behind") ? "behind"
+          : wsEffective.includes("on_track") ? "on_track"
+          : wsEffective.length && wsEffective.every(s=>s==="complete") ? "complete" : "no_data";
         const days = daysUntil(p.target_end_date);
         const loc = LOCATIONS.find(l=>l.id===p.location_id);
         return (
@@ -3585,6 +3595,11 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, progr
           const s = statusByWsId[w.id];
           const crew = latestCrewFor(w.id);
           const closed = w.status==="complete";
+          // project_workstream_status's own computed status never returns
+          // "complete" (remaining<=0 maps to 'on_track' — see the comment
+          // in WeeklyLogForm.save()), so "reached target but not yet closed"
+          // has to be read off remaining directly, not s?.status.
+          const atTarget = !closed && s?.remaining!=null && Number(s.remaining)<=0;
           return (
             <tr key={w.id} style={closed?{opacity:.6}:undefined}>
               <td style={{fontWeight:600}}>{w.name}</td>
@@ -3597,6 +3612,8 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, progr
               <td>
                 {closed ? (
                   <span className="badge" style={{background:`${T.gold}22`,color:T.gold,border:`1px solid ${T.gold}55`}}>Closed</span>
+                ) : atTarget ? (
+                  <span className="badge" style={{background:`${T.gold}22`,color:T.gold,border:`1px solid ${T.gold}55`}}>Complete</span>
                 ) : (
                   <span className="badge" style={{background:`${statusBadgeColor(s?.status)}22`,color:statusBadgeColor(s?.status),border:`1px solid ${statusBadgeColor(s?.status)}55`}}>
                     {statusBadgeLabel(s?.status)}
@@ -3959,11 +3976,22 @@ function WeeklyLogForm({ workstream, project, items, companyId, hrEmployees, set
       // live status row directly rather than trusting props here, since
       // refreshWorkstreamStatus's setState may not have flushed to this
       // component's props yet by the time we check.
+      //
+      // IMPORTANT: project_workstream_status's own computed `status` column
+      // never actually returns "complete" — its CASE only ever produces
+      // 'no_data' / 'on_track' / 'behind' (remaining<=0 maps to 'on_track',
+      // see add_project_workstream_estimates.sql). "Complete" only exists
+      // as a value of the STORED status column (aliased manual_status on
+      // this view), which is what closeWorkstream() sets. So "reached
+      // target" has to be read off `remaining <= 0` directly, not `status`.
       if (workstream.status !== "complete") {
         try {
           const rows = await sb.select("project_workstream_status", `id=eq.${workstream.id}&company_id=eq.${companyId}`);
-          if (rows?.[0]?.status === "complete") onTargetReached?.(workstream, rows[0]);
-        } catch(e) { /* non-critical — the live badge alone still shows Complete */ }
+          const row = rows?.[0];
+          if (row && row.manual_status !== "complete" && Number(row.remaining) <= 0) {
+            onTargetReached?.(workstream, row);
+          }
+        } catch(e) { /* non-critical — worst case they just don't get the popup */ }
       }
 
       onClose();
