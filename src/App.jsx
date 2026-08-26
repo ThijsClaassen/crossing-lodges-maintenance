@@ -2773,6 +2773,67 @@ async function generateJobInvoice({ job, laborInserts, materialLines, items, pur
   }
 }
 
+// Same idea as generateJobInvoice, but for a Projects workstream progress
+// log (2026-08-26, Thijs: "Are cost for projects also being pushed through
+// to internal billing? ... Can use full day wage for project labor cost").
+// Progress logs never captured hours worked (only who was on the crew via
+// project_progress_crew), so — unlike job labor — this bills each crew
+// member a full day's rate (real monthly cost ÷ standard working
+// days/month, via get_employee_daily_rate) for every logged entry they
+// appear in, rather than an hourly rate against hours that don't exist.
+// Casual/temp crew (no employee_id) have no HR contract anywhere in the
+// system, so their line is recorded at a daily_rate of 0 — a known,
+// documented gap (see add_project_labor_invoicing.sql), not a bug.
+// Progress logs aren't destination-scoped, only project/location-scoped, so
+// this bills to the project's lodge, not a specific destination.
+async function generateProgressInvoice({ progressLog, project, workstream, crewList, materialLines, items, purchases, companyId }) {
+  try {
+    const materialCost = (materialLines||[]).reduce((sum,m)=>{
+      const item = items.find(i=>i.id===m.item_id);
+      if(!item || !(m.qty>0)) return sum;
+      return sum + m.qty*weightedCost(item, purchases);
+    }, 0);
+
+    const asOfIso = progressLog.week_ending; // already ISO — <input type="date">
+
+    const rateByEmployee = {};
+    for(const c of crewList){
+      if(!c.employee_id){ rateByEmployee[c.employee_id] = 0; continue; } // casual — no HR cost data
+      if(rateByEmployee[c.employee_id]!==undefined) continue;
+      const { data, error } = await supabase.rpc("get_employee_daily_rate", {
+        p_employee_id: c.employee_id, p_company_id: companyId, p_as_of_date: asOfIso,
+      });
+      rateByEmployee[c.employee_id] = error ? 0 : Number(data||0);
+    }
+
+    const laborLines = crewList.map(c=>{
+      const rate = c.employee_id ? (rateByEmployee[c.employee_id]||0) : 0;
+      return {
+        id: uid(), employee_id: c.employee_id||null, employee_name: c.worker_name,
+        is_casual: !!c.is_casual, daily_rate: rate, line_cost: rate,
+        company_id: companyId,
+      };
+    });
+    const laborCost = laborLines.reduce((s,l)=>s+l.line_cost, 0);
+    const totalCost = Math.round((laborCost+materialCost)*100)/100;
+
+    const invoice = {
+      id: uid(), company_id: companyId, progress_log_id: progressLog.id,
+      project_id: project.id, workstream_id: workstream.id, location_id: project.location_id,
+      log_date: progressLog.week_ending,
+      labor_cost: Math.round(laborCost*100)/100,
+      material_cost: Math.round(materialCost*100)/100,
+      total_cost: totalCost,
+    };
+    await sb.insert("project_progress_invoices", invoice);
+    for(const line of laborLines){
+      await sb.insert("project_progress_invoice_labor_lines", { ...line, invoice_id: invoice.id });
+    }
+  }catch(e){
+    console.error("Could not generate progress invoice for log", progressLog?.id, e);
+  }
+}
+
 // Roll issues up per destination. Issues keep a dest_name snapshot, so
 // anything issued to a destination that was later renamed or removed is
 // still counted under the name it was recorded with.
@@ -3044,7 +3105,7 @@ function DestinationCosts({ destinations, issues, items, purchases, jobs }) {
 // — maint_issues has no `reason` column the way Food/Beverage's write-offs
 // do) isn't separately tracked here; it simply isn't billed to anyone. Worth
 // knowing, not fixed here.
-function InternalBillingPage({ invoices, billingSettings, setBillingSettings, companyId }) {
+function InternalBillingPage({ invoices, projectInvoices, projects, workstreams, billingSettings, setBillingSettings, companyId }) {
   const [month, setMonth]           = useState(()=>new Date().toISOString().slice(0,7)); // YYYY-MM
   const [hoursInput, setHoursInput] = useState(String(billingSettings?.standard_hours_per_month || 190));
   const [savingHours, setSavingHours] = useState(false);
@@ -3053,6 +3114,14 @@ function InternalBillingPage({ invoices, billingSettings, setBillingSettings, co
   const [openInvoice, setOpenInvoice] = useState(null);
   const [laborLines, setLaborLines] = useState([]);
   const [loadingLines, setLoadingLines] = useState(false);
+  // Project labor invoicing (2026-08-26) — same idea as job invoices, but
+  // one per progress log, billed at a full-day rate since progress logs
+  // never captured hours (see generateProgressInvoice()). Kept as separate
+  // state/modal from job invoices below since they live in a different
+  // table with a different labor-line shape (daily_rate, not hourly_rate).
+  const [openProjectInvoice, setOpenProjectInvoice] = useState(null);
+  const [projectLaborLines, setProjectLaborLines] = useState([]);
+  const [loadingProjectLines, setLoadingProjectLines] = useState(false);
 
   useEffect(()=>{ setHoursInput(String(billingSettings?.standard_hours_per_month || 190)); },[billingSettings]);
 
@@ -3064,9 +3133,13 @@ function InternalBillingPage({ invoices, billingSettings, setBillingSettings, co
     })
   ,[invoices, month]);
 
-  const totalInvoiced = monthInvoices.reduce((s,i)=>s+i.total_cost,0);
+  const monthProjectInvoices = useMemo(()=>
+    (projectInvoices||[]).filter(inv=>(inv.log_date||"").slice(0,7)===month)
+  ,[projectInvoices, month]);
+
+  const totalInvoiced = monthInvoices.reduce((s,i)=>s+i.total_cost,0) + monthProjectInvoices.reduce((s,i)=>s+i.total_cost,0);
   const totalLabor    = monthInvoices.reduce((s,i)=>s+i.labor_cost,0);
-  const totalMaterial = monthInvoices.reduce((s,i)=>s+i.material_cost,0);
+  const totalMaterial = monthInvoices.reduce((s,i)=>s+i.material_cost,0) + monthProjectInvoices.reduce((s,i)=>s+i.material_cost,0);
 
   useEffect(()=>{
     let cancelled = false;
@@ -3119,9 +3192,21 @@ function InternalBillingPage({ invoices, billingSettings, setBillingSettings, co
       if(!m[k]) m[k] = {id:k, name:k, total:0, labor:0, material:0, jobs:0};
       m[k].total += inv.total_cost; m[k].labor += inv.labor_cost; m[k].material += inv.material_cost; m[k].jobs += 1;
     });
+    // Project labor is billed to a lodge too — merge into the same
+    // per-location totals so "By Location" reflects the department's full
+    // invoiced work, not just job cards.
+    monthProjectInvoices.forEach(inv=>{
+      const k = inv.location_id;
+      if(!m[k]) m[k] = {id:k, name:k, total:0, labor:0, material:0, jobs:0};
+      m[k].total += inv.total_cost; m[k].labor += inv.labor_cost; m[k].material += inv.material_cost; m[k].jobs += 1;
+    });
     return Object.values(m).sort((a,b)=>b.total-a.total);
-  },[monthInvoices]);
+  },[monthInvoices, monthProjectInvoices]);
 
+  // Project progress logs aren't destination-scoped (only project/lodge),
+  // so they can't be merged into the per-destination job breakdown below —
+  // shown instead as one "Project Work" row per lodge with activity, kept
+  // visually distinct (italic name) so it's clear it's not a real destination.
   const byDestination = useMemo(()=>{
     const m = {};
     monthInvoices.forEach(inv=>{
@@ -3129,8 +3214,14 @@ function InternalBillingPage({ invoices, billingSettings, setBillingSettings, co
       if(!m[k]) m[k] = {id:inv.destination_id, name:inv.dest_name||"Unassigned", total:0, labor:0, material:0, jobs:0};
       m[k].total += inv.total_cost; m[k].labor += inv.labor_cost; m[k].material += inv.material_cost; m[k].jobs += 1;
     });
-    return Object.values(m).sort((a,b)=>b.total-a.total);
-  },[monthInvoices]);
+    const projByLoc = {};
+    monthProjectInvoices.forEach(inv=>{
+      const k = `project:${inv.location_id}`;
+      if(!projByLoc[k]) projByLoc[k] = {id:null, name:`Project Work — ${LOCATIONS.find(l=>l.id===inv.location_id)?.name||inv.location_id}`, total:0, labor:0, material:0, jobs:0, isProject:true};
+      projByLoc[k].total += inv.total_cost; projByLoc[k].labor += inv.labor_cost; projByLoc[k].material += inv.material_cost; projByLoc[k].jobs += 1;
+    });
+    return [...Object.values(m), ...Object.values(projByLoc)].sort((a,b)=>b.total-a.total);
+  },[monthInvoices, monthProjectInvoices]);
 
   const sortedInvoices = useMemo(()=>
     [...monthInvoices].sort((a,b)=>{
@@ -3138,6 +3229,10 @@ function InternalBillingPage({ invoices, billingSettings, setBillingSettings, co
       return (db?db.getTime():0)-(da?da.getTime():0);
     })
   ,[monthInvoices]);
+
+  const sortedProjectInvoices = useMemo(()=>
+    [...monthProjectInvoices].sort((a,b)=> (b.log_date||"").localeCompare(a.log_date||""))
+  ,[monthProjectInvoices]);
 
   const viewLines = async (inv) => {
     setOpenInvoice(inv); setLoadingLines(true);
@@ -3148,11 +3243,22 @@ function InternalBillingPage({ invoices, billingSettings, setBillingSettings, co
     finally{ setLoadingLines(false); }
   };
 
+  const viewProjectLines = async (inv) => {
+    setOpenProjectInvoice(inv); setLoadingProjectLines(true);
+    try{
+      const rows = await sb.select("project_progress_invoice_labor_lines", `invoice_id=eq.${inv.id}&company_id=eq.${companyId}`);
+      setProjectLaborLines(rows.map(r=>({...r,daily_rate:+r.daily_rate,line_cost:+r.line_cost})));
+    }catch(e){ alert("Could not load labor detail: "+e.message); setProjectLaborLines([]); }
+    finally{ setLoadingProjectLines(false); }
+  };
+
   return (<>
     <div style={{fontSize:12,color:T.muted,marginBottom:16,lineHeight:1.6}}>
       Every completed job is automatically billed back to its lodge/destination at cost —
       material at weighted average, labor at each employee's own real loaded hourly rate.
-      This is an internal accounting view only; no real payments move.
+      Project workstream progress logs are billed the same way, at a full day's rate per
+      crew member per log (progress logs don't track hours). This is an internal accounting
+      view only; no real payments move.
     </div>
 
     <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14,flexWrap:"wrap"}}>
@@ -3176,8 +3282,8 @@ function InternalBillingPage({ invoices, billingSettings, setBillingSettings, co
       <div className="strip-item"><div className="strip-label">Gap (Unbilled Capacity)</div>
         <div className="strip-val" style={{color:gap==null?T.muted:gap>0?T.danger:T.ok}}>{gap==null?"—":fmtR(gap)}</div>
         <div style={{fontSize:10,color:T.muted,marginTop:2}}>{gap==null?"":gap>0?"Idle/unbilled labor cost":"Fully recovered"}</div></div>
-      <div className="strip-item"><div className="strip-label">Jobs Invoiced</div>
-        <div className="strip-val">{monthInvoices.length}</div></div>
+      <div className="strip-item"><div className="strip-label">Jobs / Logs Invoiced</div>
+        <div className="strip-val">{monthInvoices.length} / {monthProjectInvoices.length}</div></div>
     </div>
     {deptCostErr && (
       <div style={{fontSize:11,color:T.warn,marginBottom:14}}>
@@ -3208,7 +3314,7 @@ function InternalBillingPage({ invoices, billingSettings, setBillingSettings, co
       <tbody>
         {byDestination.map(r=>(
           <tr key={r.id||r.name}>
-            <td style={{fontWeight:600}}>{r.name}</td>
+            <td style={{fontWeight:r.isProject?500:600,fontStyle:r.isProject?"italic":"normal",color:r.isProject?T.muted:T.cream}}>{r.name}</td>
             <td className="num" style={{color:T.muted}}>{r.jobs||"—"}</td>
             <td className="num" style={{color:T.muted}}>{r.labor>0?fmtR(r.labor):"—"}</td>
             <td className="num" style={{color:T.muted}}>{r.material>0?fmtR(r.material):"—"}</td>
@@ -3267,6 +3373,59 @@ function InternalBillingPage({ invoices, billingSettings, setBillingSettings, co
           )}
           <div style={{display:"flex",gap:9,marginTop:16}}>
             <button className="btn btn-ghost" onClick={()=>setOpenInvoice(null)}>Close</button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    <div style={{fontSize:11,letterSpacing:".08em",textTransform:"uppercase",color:T.gold,fontWeight:700,margin:"18px 0 8px"}}>Project Labor Invoices</div>
+    <div className="tbl-wrap"><table className="tbl">
+      <thead><tr><th>Date</th><th>Project</th><th>Workstream</th><th className="num">Labor</th><th className="num">Material</th><th className="num">Total</th><th></th></tr></thead>
+      <tbody>
+        {sortedProjectInvoices.map(inv=>(
+          <tr key={inv.id}>
+            <td className="mono" style={{fontSize:11}}>{inv.log_date}</td>
+            <td style={{fontWeight:600}}>{projects.find(p=>p.id===inv.project_id)?.name||"—"}</td>
+            <td style={{fontSize:12,color:T.muted}}>{workstreams.find(w=>w.id===inv.workstream_id)?.name||"—"}</td>
+            <td className="num" style={{color:T.muted}}>{fmtR(inv.labor_cost)}</td>
+            <td className="num" style={{color:T.muted}}>{fmtR(inv.material_cost)}</td>
+            <td className="num" style={{fontWeight:700,color:T.gold}}>{fmtR(inv.total_cost)}</td>
+            <td>
+              <button onClick={()=>viewProjectLines(inv)}
+                style={{background:"none",border:`1px solid ${T.border}`,borderRadius:5,color:T.muted,fontSize:11,cursor:"pointer",padding:"3px 9px"}}>
+                Labor
+              </button>
+            </td>
+          </tr>
+        ))}
+        {sortedProjectInvoices.length===0 && <tr><td colSpan={7} className="empty">No project logs invoiced this month</td></tr>}
+      </tbody>
+    </table></div>
+
+    {openProjectInvoice && (
+      <div className="overlay" onClick={e=>e.target===e.currentTarget&&setOpenProjectInvoice(null)}>
+        <div className="modal">
+          <div className="modal-title">Labor <span>{projects.find(p=>p.id===openProjectInvoice.project_id)?.name||"Project"}</span></div>
+          {loadingProjectLines ? (
+            <div style={{fontSize:12,color:T.muted}}>Loading…</div>
+          ) : (
+            <div className="tbl-wrap"><table className="tbl" style={{minWidth:0}}>
+              <thead><tr><th>Employee</th><th>Casual</th><th className="num">Daily Rate</th><th className="num">Cost</th></tr></thead>
+              <tbody>
+                {projectLaborLines.map(l=>(
+                  <tr key={l.id}>
+                    <td style={{fontWeight:600}}>{l.employee_name}</td>
+                    <td style={{fontSize:12,color:T.muted}}>{l.is_casual?"Yes":"—"}</td>
+                    <td className="num" style={{color:T.muted}}>{fmtR(l.daily_rate)}</td>
+                    <td className="num" style={{fontWeight:700,color:T.gold}}>{fmtR(l.line_cost)}</td>
+                  </tr>
+                ))}
+                {projectLaborLines.length===0 && <tr><td colSpan={4} className="empty">No labor lines found</td></tr>}
+              </tbody>
+            </table></div>
+          )}
+          <div style={{display:"flex",gap:9,marginTop:16}}>
+            <button className="btn btn-ghost" onClick={()=>setOpenProjectInvoice(null)}>Close</button>
           </div>
         </div>
       </div>
@@ -3337,7 +3496,7 @@ function statusBadgeLabel(s) {
 function ProjectsPage({ locId, projects, workstreams, workstreamStatus, progressLogs,
                          progressMaterials, setProgressMaterials, progressCrew, setProgressCrew,
                          setProjects, setWorkstreams, setProgressLogs, refreshWorkstreamStatus,
-                         hrEmployees, hrScheduleLocations, hrLeave, itemsByLoc, isAdmin, companyId }) {
+                         hrEmployees, hrScheduleLocations, hrLeave, itemsByLoc, purchasesByLoc, isAdmin, companyId }) {
   const [locFilter, setLocFilter] = useState("all");
   const [openProjectId, setOpenProjectId] = useState(null);
   const [showNewProject, setShowNewProject] = useState(false);
@@ -3379,6 +3538,7 @@ function ProjectsPage({ locId, projects, workstreams, workstreamStatus, progress
         setProjects={setProjects} refreshWorkstreamStatus={refreshWorkstreamStatus}
         hrEmployees={hrEmployees} hrScheduleLocations={hrScheduleLocations} hrLeave={hrLeave}
         items={itemsByLoc[openProject.location_id]||[]}
+        purchases={purchasesByLoc[openProject.location_id]||[]}
         isAdmin={isAdmin} companyId={companyId}
         onBack={()=>setOpenProjectId(null)}/>
     );
@@ -3525,7 +3685,7 @@ function NewProjectForm({ locId, companyId, setProjects, onClose }) {
 function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, progressMaterials, setProgressMaterials,
                           progressCrew, setProgressCrew,
                           setWorkstreams, setProgressLogs, setProjects, refreshWorkstreamStatus,
-                          hrEmployees, hrScheduleLocations, hrLeave, items, isAdmin, companyId, onBack }) {
+                          hrEmployees, hrScheduleLocations, hrLeave, items, purchases, isAdmin, companyId, onBack }) {
   const [logFor, setLogFor] = useState(null);
   const [editWs, setEditWs] = useState(null);
   const [showNewWs, setShowNewWs] = useState(false);
@@ -3659,7 +3819,7 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, progr
       hrEmployees={hrEmployees} hrScheduleLocations={hrScheduleLocations} hrLeave={hrLeave}/>
 
     {logFor && (
-      <WeeklyLogForm workstream={logFor} project={project} items={items} companyId={companyId} hrEmployees={hrEmployees}
+      <WeeklyLogForm workstream={logFor} project={project} items={items} purchases={purchases} companyId={companyId} hrEmployees={hrEmployees}
         setProgressLogs={setProgressLogs} setProgressMaterials={setProgressMaterials} setProgressCrew={setProgressCrew}
         refreshWorkstreamStatus={refreshWorkstreamStatus}
         onTargetReached={(ws,statusRow)=>setReachedTarget({workstream:ws, statusRow})}
@@ -3926,7 +4086,7 @@ function EditLogForm({ log, workstream, setProgressLogs, refreshWorkstreamStatus
   );
 }
 
-function WeeklyLogForm({ workstream, project, items, companyId, hrEmployees, setProgressLogs, setProgressCrew, setProgressMaterials, refreshWorkstreamStatus, onTargetReached, onClose }) {
+function WeeklyLogForm({ workstream, project, items, purchases, companyId, hrEmployees, setProgressLogs, setProgressCrew, setProgressMaterials, refreshWorkstreamStatus, onTargetReached, onClose }) {
   const isoToday = new Date().toISOString().slice(0,10);
   const [form, setForm] = useState({week_ending:isoToday, qty_done:"", cost_incurred:"", notes:""});
   const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
@@ -3993,6 +4153,14 @@ function WeeklyLogForm({ workstream, project, items, companyId, hrEmployees, set
         newProgressMats.push(pmRow);
       }
       if(newProgressMats.length) setProgressMaterials(p=>[...p, ...newProgressMats]);
+
+      // Internal Invoicing (2026-08-26) — bill this progress log's crew +
+      // materials back to the project's lodge, same as a job card does at
+      // completion. Never blocks the log from saving on failure.
+      await generateProgressInvoice({
+        progressLog: ins, project, workstream, crewList, materialLines: newProgressMats,
+        items, purchases, companyId,
+      });
 
       await refreshWorkstreamStatus?.();
 
@@ -4309,6 +4477,10 @@ function AuthenticatedApp() {
   // "company-wide, not per-location" reasoning as jobMaterials/projects
   // above — see InternalBilling page + generateJobInvoice().
   const [jobInvoices,      setJobInvoices]      = useState([]);
+  // Project labor invoicing (2026-08-26) — same idea, but one per progress
+  // log rather than one per completed job, since Projects work has its own
+  // separate completion flow. See generateProgressInvoice().
+  const [projectInvoices, setProjectInvoices]   = useState([]);
   const [billingSettings,  setBillingSettings]  = useState(null);
   // Projects (2026-08-19) — company-wide, not per-location like allData,
   // same reasoning as jobMaterials/templateMaterials above: these are
@@ -4351,7 +4523,7 @@ function AuthenticatedApp() {
       const[itemRows,purchRows,issueRows,countRows,destRows,jobRows,tplRows,jobMatRows,tplMatRows,slipRows,
             projectRows,workstreamRows,workstreamStatusRows,progressLogRows,progressMatRows,progressCrewRows,
             hrEmployeeRows,hrScheduleLocationRows,hrLeaveRows,creditNoteRows,
-            jobInvoiceRows,billingSettingsRows]=await Promise.all([
+            jobInvoiceRows,billingSettingsRows,projectInvoiceRows]=await Promise.all([
         sb.select("maint_items", `active=eq.true&${cf}&order=sort_order.asc`),
         sb.select("maint_purchases", cf),
         sb.select("maint_issues", cf),
@@ -4374,6 +4546,7 @@ function AuthenticatedApp() {
         sb.select("supplier_credit_notes", `app=eq.maintenance&${cf}`),
         sb.select("maint_job_invoices", cf).catch(()=>[]),
         sb.select("maintenance_billing_settings", cf).catch(()=>[]),
+        sb.select("project_progress_invoices", cf).catch(()=>[]),
       ]);
       const slipMap={}; (slipRows||[]).forEach(s=>{slipMap[s.id]=s;});
       setSlips(slipMap);
@@ -4404,6 +4577,7 @@ function AuthenticatedApp() {
       setHrLeave(hrLeaveRows);
       setJobInvoices((jobInvoiceRows||[]).map(r=>({...r,labor_cost:+r.labor_cost,material_cost:+r.material_cost,total_cost:+r.total_cost})));
       setBillingSettings((billingSettingsRows||[])[0]||null);
+      setProjectInvoices((projectInvoiceRows||[]).map(r=>({...r,labor_cost:+r.labor_cost,material_cost:+r.material_cost,total_cost:+r.total_cost})));
     }catch(e){setLoadErr(e.message);}
     finally{setLoading(false);}
   },[companyId]);
@@ -4638,9 +4812,10 @@ function AuthenticatedApp() {
                                        setProjects={setProjects} setWorkstreams={setWorkstreams} setProgressLogs={setProgressLogs}
                                        refreshWorkstreamStatus={refreshWorkstreamStatus}
                                        hrEmployees={hrEmployees} hrScheduleLocations={hrScheduleLocations} hrLeave={hrLeave}
-                                       itemsByLoc={allData.items}
+                                       itemsByLoc={allData.items} purchasesByLoc={allData.purchases}
                                        isAdmin={isAdmin} companyId={companyId}/>}
-          {page==="billing"      && isAdmin && <InternalBillingPage invoices={jobInvoices} billingSettings={billingSettings}
+          {page==="billing"      && isAdmin && <InternalBillingPage invoices={jobInvoices} projectInvoices={projectInvoices}
+                                       projects={projects} workstreams={workstreams} billingSettings={billingSettings}
                                        setBillingSettings={setBillingSettings} companyId={companyId}/>}
           {page==="templates"    && isAdmin && <JobTemplates locId={locId} templates={templates} setTemplates={setTemplates}
                                        templateMaterials={templateMaterials} setTemplateMaterials={setTemplateMaterials}
