@@ -3502,6 +3502,25 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, progr
   const [editWs, setEditWs] = useState(null);
   const [showNewWs, setShowNewWs] = useState(false);
   const [historyFor, setHistoryFor] = useState(null);
+  // Reuses project_workstreams' own pre-existing (previously unused) status
+  // column as the "closed" flag — status:"complete" means logging is done
+  // and the workstream is closed out; anything else is still open. See
+  // closeWorkstream/reopenWorkstream + the popup below.
+  const [reachedTarget, setReachedTarget] = useState(null); // {workstream, statusRow}
+
+  const closeWorkstream = async (ws) => {
+    try {
+      await sb.update("project_workstreams", ws.id, {status:"complete"});
+      setWorkstreams(p=>p.map(w=>w.id===ws.id?{...w,status:"complete"}:w));
+    } catch(e) { alert("Error: "+e.message); }
+    setReachedTarget(null);
+  };
+  const reopenWorkstream = async (ws) => {
+    try {
+      await sb.update("project_workstreams", ws.id, {status:"on_track"});
+      setWorkstreams(p=>p.map(w=>w.id===ws.id?{...w,status:"on_track"}:w));
+    } catch(e) { alert("Error: "+e.message); }
+  };
 
   const latestCrewFor = wsId => {
     const logs = progressLogs.filter(l=>l.workstream_id===wsId);
@@ -3565,8 +3584,9 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, progr
         {workstreams.map(w=>{
           const s = statusByWsId[w.id];
           const crew = latestCrewFor(w.id);
+          const closed = w.status==="complete";
           return (
-            <tr key={w.id}>
+            <tr key={w.id} style={closed?{opacity:.6}:undefined}>
               <td style={{fontWeight:600}}>{w.name}</td>
               <td className="num">{fmtQty(w.target_qty, w.unit)}</td>
               <td className="num">{fmtQty(s?.cumulative_done ?? w.baseline_qty, w.unit)}</td>
@@ -3575,18 +3595,23 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, progr
               <td className="num" style={{color:T.muted}}>{fmtRatePerWeek(s?.actual_rate_per_week, w.estimate_unit)}</td>
               <td className="num" style={{color:T.muted}}>{fmtRatePerWeek(s?.rate_needed_per_week, w.estimate_unit)}</td>
               <td>
-                <span className="badge" style={{background:`${statusBadgeColor(s?.status)}22`,color:statusBadgeColor(s?.status),border:`1px solid ${statusBadgeColor(s?.status)}55`}}>
-                  {statusBadgeLabel(s?.status)}
-                </span>
+                {closed ? (
+                  <span className="badge" style={{background:`${T.gold}22`,color:T.gold,border:`1px solid ${T.gold}55`}}>Closed</span>
+                ) : (
+                  <span className="badge" style={{background:`${statusBadgeColor(s?.status)}22`,color:statusBadgeColor(s?.status),border:`1px solid ${statusBadgeColor(s?.status)}55`}}>
+                    {statusBadgeLabel(s?.status)}
+                  </span>
+                )}
               </td>
               <td style={{fontSize:12,color:T.muted}}>{s?.projected_finish_date||"—"}</td>
               <td className="num" style={{color: s?.budget_variance==null?T.muted: s.budget_variance<0?T.danger:T.ok}}>
                 {w.budget_cost==null?"No budget set": s?.budget_variance==null?"—":fmtR(s.budget_variance)}
               </td>
               <td style={{display:"flex",gap:5}}>
-                <button className="btn btn-primary btn-sm" onClick={()=>setLogFor(w)}>+ Log</button>
+                {!closed && <button className="btn btn-primary btn-sm" onClick={()=>setLogFor(w)}>+ Log</button>}
                 {isAdmin && <button className="btn btn-ghost btn-sm" onClick={()=>setHistoryFor(w)}>History</button>}
                 {isAdmin && <button className="btn btn-ghost btn-sm" onClick={()=>setEditWs(w)}>Edit</button>}
+                {isAdmin && closed && <button className="btn btn-ghost btn-sm" onClick={()=>reopenWorkstream(w)}>Reopen</button>}
               </td>
             </tr>
           );
@@ -3602,7 +3627,24 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, progr
       <WeeklyLogForm workstream={logFor} project={project} items={items} companyId={companyId} hrEmployees={hrEmployees}
         setProgressLogs={setProgressLogs} setProgressMaterials={setProgressMaterials} setProgressCrew={setProgressCrew}
         refreshWorkstreamStatus={refreshWorkstreamStatus}
+        onTargetReached={(ws,statusRow)=>setReachedTarget({workstream:ws, statusRow})}
         onClose={()=>setLogFor(null)}/>
+    )}
+    {reachedTarget && (
+      <div className="overlay" onClick={e=>e.target===e.currentTarget&&setReachedTarget(null)}>
+        <div className="modal" style={{maxWidth:420}}>
+          <div className="modal-title">Target Reached <span>{reachedTarget.workstream.name}</span></div>
+          <div style={{fontSize:13,color:T.muted,lineHeight:1.6,marginBottom:16}}>
+            This workstream has reached its target — {fmtQty(reachedTarget.statusRow.cumulative_done, reachedTarget.workstream.unit)} of{" "}
+            {fmtQty(reachedTarget.workstream.target_qty, reachedTarget.workstream.unit)}. Mark it as complete and close it out?
+            You can still reopen it later if needed.
+          </div>
+          <div style={{display:"flex",gap:9}}>
+            <button className="btn btn-primary" onClick={()=>closeWorkstream(reachedTarget.workstream)}>Mark Complete</button>
+            <button className="btn btn-ghost" onClick={()=>setReachedTarget(null)}>Not Yet</button>
+          </div>
+        </div>
+      </div>
     )}
     {editWs && (
       <EditWorkstreamForm workstream={editWs} setWorkstreams={setWorkstreams}
@@ -3635,7 +3677,9 @@ function ProjectDetail({ project, workstreams, statusByWsId, progressLogs, progr
 // inferred from the workstream's own logged history — a rough guide, not
 // a guarantee, and said as much in the copy below.
 function WorkstreamSuggestions({ project, workstreams, statusByWsId, hrEmployees, hrScheduleLocations, hrLeave }) {
-  const rows = workstreams.map(w=>({ w, s: statusByWsId[w.id] })).filter(({s})=>s);
+  // Closed workstreams (status==="complete", see ProjectDetail) don't need
+  // a crew/pace suggestion — the work is done.
+  const rows = workstreams.map(w=>({ w, s: statusByWsId[w.id] })).filter(({w,s})=>s && w.status!=="complete");
   if (rows.length===0) return null;
 
   // How many Maintenance-department staff are actually on duty at this
@@ -3838,7 +3882,7 @@ function EditLogForm({ log, workstream, setProgressLogs, refreshWorkstreamStatus
   );
 }
 
-function WeeklyLogForm({ workstream, project, items, companyId, hrEmployees, setProgressLogs, setProgressCrew, setProgressMaterials, refreshWorkstreamStatus, onClose }) {
+function WeeklyLogForm({ workstream, project, items, companyId, hrEmployees, setProgressLogs, setProgressCrew, setProgressMaterials, refreshWorkstreamStatus, onTargetReached, onClose }) {
   const isoToday = new Date().toISOString().slice(0,10);
   const [form, setForm] = useState({week_ending:isoToday, qty_done:"", cost_incurred:"", notes:""});
   const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
@@ -3907,6 +3951,21 @@ function WeeklyLogForm({ workstream, project, items, companyId, hrEmployees, set
       if(newProgressMats.length) setProgressMaterials(p=>[...p, ...newProgressMats]);
 
       await refreshWorkstreamStatus?.();
+
+      // If this log pushed the workstream to (or past) its target, offer to
+      // close it out (2026-08-26, Thijs: "when a workstream reaches its
+      // target after filling in the logs, I want it showing as completed...
+      // and with that also close it"). Re-fetches this one workstream's
+      // live status row directly rather than trusting props here, since
+      // refreshWorkstreamStatus's setState may not have flushed to this
+      // component's props yet by the time we check.
+      if (workstream.status !== "complete") {
+        try {
+          const rows = await sb.select("project_workstream_status", `id=eq.${workstream.id}&company_id=eq.${companyId}`);
+          if (rows?.[0]?.status === "complete") onTargetReached?.(workstream, rows[0]);
+        } catch(e) { /* non-critical — the live badge alone still shows Complete */ }
+      }
+
       onClose();
     } catch(e) { alert("Save failed: "+e.message); }
     finally { setSaving(false); }
