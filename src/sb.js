@@ -20,16 +20,43 @@
 // [[feedback-git-and-async-gotchas]] for why that matters.
 
 import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from './supabaseClient.js'
+import {
+  cacheSelect,
+  readCachedSelect,
+  enqueue,
+  listQueue,
+  applyQueueToRows,
+  isNetworkFailure,
+  registerReplayer,
+} from './offline.js'
 
 const SB_URL = SUPABASE_URL
 
+// Last token we successfully saw, kept in memory as an offline fallback.
+// getSession() reads localStorage, but if the access token has expired it
+// tries to refresh — which needs the network. Offline that throws, and
+// without this fallback every queued write would fail to even build its
+// headers. The token it falls back on may well be stale; that's fine, since
+// the request it's attached to is about to fail on the network anyway and
+// get queued. What matters is that header-building never throws.
+let lastKnownToken = null
+
 async function headers(extra = {}) {
-  const {
-    data: { session },
-  } = await supabase.auth.getSession()
+  let token = lastKnownToken
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession()
+    if (session?.access_token) {
+      token = session.access_token
+      lastKnownToken = token
+    }
+  } catch {
+    // Offline, or refresh failed — fall through to lastKnownToken.
+  }
   return {
     apikey: SUPABASE_ANON_KEY,
-    Authorization: `Bearer ${session?.access_token || SUPABASE_ANON_KEY}`,
+    Authorization: `Bearer ${token || SUPABASE_ANON_KEY}`,
     'Content-Type': 'application/json',
     Prefer: 'return=representation',
     ...extra,
@@ -74,36 +101,129 @@ async function sbFetch(url, buildInit) {
   return res
 }
 
-export const sb = {
-  async select(t, f = '') {
-    const r = await sbFetch(`${SB_URL}/rest/v1/${t}?${f}&order=created_at.asc`, async () => ({ headers: await headers() }))
-    if (!r.ok) throw new Error(await r.text())
-    return r.json()
-  },
-  async insert(t, row) {
-    const r = await sbFetch(`${SB_URL}/rest/v1/${t}`, async () => ({
+// --- Offline layer (2026-08-26) -------------------------------------------
+//
+// Crew work where there's no signal. Reads fall back to a local cache, writes
+// fall into a durable queue that uploads itself once coverage returns. See
+// offline.js for the full reasoning; the important part here is that ONLINE
+// BEHAVIOUR IS UNCHANGED — same requests, same return values, same thrown
+// errors. The offline paths only engage when a request fails for network
+// reasons, so nothing about the normal case got slower or looser.
+
+// Turns a non-ok response into the same Error shape as before, but tagged so
+// offline.js can tell "the server said no" apart from "there was no network".
+async function httpError(res) {
+  const err = new Error(await res.text())
+  err.__httpStatus = res.status
+  return err
+}
+
+async function runRequest(url, buildInit) {
+  const res = await sbFetch(url, buildInit)
+  if (!res.ok) throw await httpError(res)
+  return res
+}
+
+// offline.js replays queue entries through this, so it never needs to know
+// about auth headers or the Supabase URL.
+registerReplayer(async (entry) => {
+  const { table, op, payload, matchId } = entry
+  if (op === 'insert' || op === 'upsert') {
+    // Replayed as upsert-on-id: if the app died between the server accepting
+    // this and the queue entry being cleared, replaying must not duplicate
+    // it. Safe because every row here carries a client-generated id.
+    const onConflict = entry.onConflict || 'id'
+    await runRequest(`${SB_URL}/rest/v1/${table}?on_conflict=${encodeURIComponent(onConflict)}`, async () => ({
       method: 'POST',
-      headers: await headers(),
-      body: JSON.stringify(row),
+      headers: await headers({ Prefer: 'resolution=merge-duplicates,return=representation' }),
+      body: JSON.stringify(payload),
     }))
-    if (!r.ok) throw new Error(await r.text())
-    const d = await r.json()
-    return Array.isArray(d) ? d[0] : d
-  },
-  async update(t, id, patch) {
-    const r = await sbFetch(`${SB_URL}/rest/v1/${t}?id=eq.${encodeURIComponent(id)}`, async () => ({
+  } else if (op === 'update') {
+    await runRequest(`${SB_URL}/rest/v1/${table}?id=eq.${encodeURIComponent(matchId)}`, async () => ({
       method: 'PATCH',
       headers: await headers(),
-      body: JSON.stringify(patch),
+      body: JSON.stringify(payload),
     }))
-    if (!r.ok) throw new Error(await r.text())
-  },
-  async delete(t, id) {
-    const r = await sbFetch(`${SB_URL}/rest/v1/${t}?id=eq.${encodeURIComponent(id)}`, async () => ({
+  } else if (op === 'delete') {
+    await runRequest(`${SB_URL}/rest/v1/${table}?id=eq.${encodeURIComponent(matchId)}`, async () => ({
       method: 'DELETE',
       headers: await headers(),
     }))
-    if (!r.ok) throw new Error(await r.text())
+  }
+})
+
+export const sb = {
+  async select(t, f = '') {
+    const url = `${SB_URL}/rest/v1/${t}?${f}&order=created_at.asc`
+    try {
+      const r = await runRequest(url, async () => ({ headers: await headers() }))
+      const rows = await r.json()
+      cacheSelect(url, rows) // fire-and-forget; caching must never delay a read
+      // Even online, anything still queued hasn't reached the server yet, so
+      // fold it in — otherwise a row the user just added would disappear on
+      // the next refresh while its upload is still in flight.
+      const queue = await listQueue()
+      return queue.length ? applyQueueToRows(t, url, rows, queue) : rows
+    } catch (err) {
+      if (!isNetworkFailure(err)) throw err
+      const cached = await readCachedSelect(url)
+      if (cached == null) {
+        // Never cached this query while online, so there's genuinely nothing
+        // to show. An empty list is the honest answer — better than an error
+        // that makes the whole screen fail.
+        const queue = await listQueue()
+        return applyQueueToRows(t, url, [], queue)
+      }
+      const queue = await listQueue()
+      return applyQueueToRows(t, url, cached, queue)
+    }
+  },
+
+  async insert(t, row) {
+    const url = `${SB_URL}/rest/v1/${t}`
+    try {
+      const r = await runRequest(url, async () => ({
+        method: 'POST',
+        headers: await headers(),
+        body: JSON.stringify(row),
+      }))
+      const d = await r.json()
+      return Array.isArray(d) ? d[0] : d
+    } catch (err) {
+      if (!isNetworkFailure(err)) throw err
+      await enqueue({ table: t, op: 'insert', payload: row })
+      // Callers use the returned row (4 places do). Every row already carries
+      // its own client-generated id, so handing back what we were given is
+      // exactly what the server would have echoed.
+      return Array.isArray(row) ? row[0] : row
+    }
+  },
+
+  async update(t, id, patch) {
+    const url = `${SB_URL}/rest/v1/${t}?id=eq.${encodeURIComponent(id)}`
+    try {
+      await runRequest(url, async () => ({
+        method: 'PATCH',
+        headers: await headers(),
+        body: JSON.stringify(patch),
+      }))
+    } catch (err) {
+      if (!isNetworkFailure(err)) throw err
+      await enqueue({ table: t, op: 'update', matchId: id, payload: patch })
+    }
+  },
+
+  async delete(t, id) {
+    const url = `${SB_URL}/rest/v1/${t}?id=eq.${encodeURIComponent(id)}`
+    try {
+      await runRequest(url, async () => ({
+        method: 'DELETE',
+        headers: await headers(),
+      }))
+    } catch (err) {
+      if (!isNetworkFailure(err)) throw err
+      await enqueue({ table: t, op: 'delete', matchId: id })
+    }
   },
 }
 

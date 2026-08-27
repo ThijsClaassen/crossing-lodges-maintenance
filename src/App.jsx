@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { sb, LOCATIONS, LOC_COLORS } from "./sb.js";
+import { subscribe as subscribeOffline, listRejected, retryRejected, discardEntry, syncNow } from "./offline.js";
 import { supabase } from "./supabaseClient.js";
 import { T, css } from "./theme.js";
 import { LOGO_DATA } from "./logo.js";
@@ -4832,6 +4833,7 @@ function AuthenticatedApp() {
         <div className="topbar">
           <div className="page-title">{current?.label}</div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            <OfflineStatus/>
             <div style={{position:"relative"}}>
               <button onClick={()=>setLocPickerOpen(v=>!v)} className="loc-badge"
                 style={{background:`${locColor}22`,border:`1px solid ${locColor}55`,color:locColor}}>
@@ -4950,4 +4952,98 @@ function AuthenticatedApp() {
       )}
     </div>
   </>);
+}
+
+// ─── OFFLINE STATUS ─────────────────────────────────────────────────────────
+// A small pill in the header. It stays out of the way when everything's
+// normal (online, nothing queued = nothing shown), and only speaks up when
+// there's something the person should actually know: no signal, work waiting
+// to upload, or something the server refused.
+//
+// The point is that crew shouldn't have to trust silently — if they logged
+// five things in a valley with no bars, they can see "5 waiting" and know
+// it's safe to close the app.
+function OfflineStatus() {
+  const [state, setState] = useState(() => ({ online: navigator.onLine, syncing: false, pending: 0, rejected: 0 }));
+  const [open, setOpen] = useState(false);
+  const [rejects, setRejects] = useState([]);
+
+  useEffect(() => {
+    const unsub = subscribeOffline(setState);
+    const onNet = () => setState(s => ({ ...s, online: navigator.onLine }));
+    window.addEventListener("online", onNet);
+    window.addEventListener("offline", onNet);
+    return () => { unsub(); window.removeEventListener("online", onNet); window.removeEventListener("offline", onNet); };
+  }, []);
+
+  useEffect(() => { if (open) listRejected().then(setRejects); }, [open, state.rejected]);
+
+  // Nothing worth saying.
+  if (state.online && !state.pending && !state.rejected && !state.syncing) return null;
+
+  const color = state.rejected ? T.danger : !state.online ? T.warn : T.ok;
+  const label = state.rejected
+    ? `${state.rejected} failed`
+    : state.syncing
+      ? "Syncing…"
+      : !state.online
+        ? (state.pending ? `Offline · ${state.pending} waiting` : "Offline")
+        : `${state.pending} waiting`;
+
+  return (
+    <div style={{position:"relative"}}>
+      <button onClick={()=>setOpen(v=>!v)} className="loc-badge"
+        style={{background:`${color}22`,border:`1px solid ${color}55`,color}}>
+        <span style={{display:"inline-block",width:6,height:6,borderRadius:"50%",background:color,flexShrink:0}}/>
+        {label}
+      </button>
+      {open && (<>
+        <div onClick={()=>setOpen(false)} style={{position:"fixed",inset:0,zIndex:49}}/>
+        <div style={{position:"absolute",top:"calc(100% + 6px)",right:0,zIndex:50,background:T.panel,
+          border:`1px solid ${T.border}`,borderRadius:8,padding:"12px 14px",minWidth:260,
+          boxShadow:"0 8px 24px rgba(0,0,0,.5)",fontSize:12,color:T.muted}}>
+          {!state.online && (
+            <div style={{marginBottom:8,color:T.warn}}>
+              No connection. You can carry on working — everything you add is saved on this
+              device and uploads by itself once you're back in signal.
+            </div>
+          )}
+          {state.pending > 0 && (
+            <div style={{marginBottom:8}}>
+              <strong style={{color:T.cream}}>{state.pending}</strong> change{state.pending===1?"":"s"} waiting to upload.
+              {state.online && " Uploading now…"}
+            </div>
+          )}
+          {state.pending === 0 && state.online && state.rejected === 0 && (
+            <div style={{marginBottom:8,color:T.ok}}>Everything's uploaded.</div>
+          )}
+          {state.rejected > 0 && (
+            <div style={{marginTop:8,paddingTop:8,borderTop:`1px solid ${T.border}`}}>
+              <div style={{color:T.danger,marginBottom:6}}>
+                {state.rejected} change{state.rejected===1?"":"s"} the server wouldn't accept. These are kept
+                here rather than thrown away, but they need a person to look at them.
+              </div>
+              {rejects.slice(0,5).map(r=>(
+                <div key={r.seq} style={{marginBottom:6,paddingBottom:6,borderBottom:`1px solid ${T.border}`}}>
+                  <div style={{color:T.cream,fontSize:11}}>{r.op} · {r.table}</div>
+                  <div style={{fontSize:10,wordBreak:"break-word"}}>{(r.lastError||"").slice(0,140)}</div>
+                  <div style={{display:"flex",gap:6,marginTop:4}}>
+                    <button className="btn btn-ghost btn-sm" onClick={()=>retryRejected(r.seq).then(()=>listRejected().then(setRejects))}>Try again</button>
+                    <button className="btn btn-danger btn-sm" onClick={()=>{
+                      if(window.confirm("Discard this change permanently? It will not be uploaded.")) {
+                        discardEntry(r.seq).then(()=>listRejected().then(setRejects));
+                      }
+                    }}>Discard</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {state.online && (state.pending>0 || state.rejected>0) && (
+            <button className="btn btn-ghost btn-sm" style={{marginTop:6}} onClick={()=>syncNow()}>Sync now</button>
+          )}
+        </div>
+      </>)}
+    </div>
+  );
 }
