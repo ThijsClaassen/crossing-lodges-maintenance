@@ -36,35 +36,73 @@ async function headers(extra = {}) {
   }
 }
 
+// Transient clock-skew retry (2026-08-26).
+//
+// Supabase sometimes rejects a perfectly valid token with PGRST303 ("JWT
+// issued at future"): its Auth service mints the token using one node's
+// clock, PostgREST validates it against another, and if Auth is a second or
+// two ahead the token looks like it hasn't been issued yet. It's transient,
+// server-side, and nothing to do with this app or the user's device — the
+// same request succeeds moments later.
+//
+// So: retry once after a short pause, then let the error surface normally.
+// Deliberately NOT "fixed" by adding clock leeway or skipping iat
+// verification — that's a real signature check, and weakening it to paper
+// over infrastructure drift would weaken auth for every user. If this starts
+// happening a lot, the actual fix is a Supabase support ticket, not more
+// retries here.
+const CLOCK_SKEW_RETRY_MS = 1500
+
+async function isClockSkewError(res) {
+  if (res.ok) return false
+  try {
+    const body = await res.clone().text()
+    return body.includes('PGRST303') || body.includes('JWT issued at future')
+  } catch {
+    return false
+  }
+}
+
+// buildInit is a function, not an object, so the retry rebuilds its headers
+// and picks up a refreshed access token if the client rotated one meanwhile.
+async function sbFetch(url, buildInit) {
+  let res = await fetch(url, await buildInit())
+  if (await isClockSkewError(res)) {
+    await new Promise((r) => setTimeout(r, CLOCK_SKEW_RETRY_MS))
+    res = await fetch(url, await buildInit())
+  }
+  return res
+}
+
 export const sb = {
   async select(t, f = '') {
-    const r = await fetch(`${SB_URL}/rest/v1/${t}?${f}&order=created_at.asc`, { headers: await headers() })
+    const r = await sbFetch(`${SB_URL}/rest/v1/${t}?${f}&order=created_at.asc`, async () => ({ headers: await headers() }))
     if (!r.ok) throw new Error(await r.text())
     return r.json()
   },
   async insert(t, row) {
-    const r = await fetch(`${SB_URL}/rest/v1/${t}`, {
+    const r = await sbFetch(`${SB_URL}/rest/v1/${t}`, async () => ({
       method: 'POST',
       headers: await headers(),
       body: JSON.stringify(row),
-    })
+    }))
     if (!r.ok) throw new Error(await r.text())
     const d = await r.json()
     return Array.isArray(d) ? d[0] : d
   },
   async update(t, id, patch) {
-    const r = await fetch(`${SB_URL}/rest/v1/${t}?id=eq.${encodeURIComponent(id)}`, {
+    const r = await sbFetch(`${SB_URL}/rest/v1/${t}?id=eq.${encodeURIComponent(id)}`, async () => ({
       method: 'PATCH',
       headers: await headers(),
       body: JSON.stringify(patch),
-    })
+    }))
     if (!r.ok) throw new Error(await r.text())
   },
   async delete(t, id) {
-    const r = await fetch(`${SB_URL}/rest/v1/${t}?id=eq.${encodeURIComponent(id)}`, {
+    const r = await sbFetch(`${SB_URL}/rest/v1/${t}?id=eq.${encodeURIComponent(id)}`, async () => ({
       method: 'DELETE',
       headers: await headers(),
-    })
+    }))
     if (!r.ok) throw new Error(await r.text())
   },
 }
