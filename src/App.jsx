@@ -3106,7 +3106,7 @@ function DestinationCosts({ destinations, issues, items, purchases, jobs }) {
 // — maint_issues has no `reason` column the way Food/Beverage's write-offs
 // do) isn't separately tracked here; it simply isn't billed to anyone. Worth
 // knowing, not fixed here.
-function InternalBillingPage({ invoices, projectInvoices, projects, workstreams, billingSettings, setBillingSettings, companyId }) {
+function InternalBillingPage({ invoices, projectInvoices, vehicleTrips, projects, workstreams, billingSettings, setBillingSettings, companyId }) {
   const [month, setMonth]           = useState(()=>new Date().toISOString().slice(0,7)); // YYYY-MM
   const [hoursInput, setHoursInput] = useState(String(billingSettings?.standard_hours_per_month || 190));
   const [savingHours, setSavingHours] = useState(false);
@@ -3138,7 +3138,28 @@ function InternalBillingPage({ invoices, projectInvoices, projects, workstreams,
     (projectInvoices||[]).filter(inv=>(inv.log_date||"").slice(0,7)===month)
   ,[projectInvoices, month]);
 
-  const totalInvoiced = monthInvoices.reduce((s,i)=>s+i.total_cost,0) + monthProjectInvoices.reduce((s,i)=>s+i.total_cost,0);
+  // Vehicle trips logged against a job card (2026-08-27). Computed LIVE from
+  // vehicle_trips rather than snapshotted onto maint_job_invoices at
+  // completion time — a trip is often logged after the job is closed, and a
+  // stored figure would silently miss it. The cost itself is already frozen
+  // per-trip (cost_per_km snapshot in Ops), so a later rate change can't
+  // restate history.
+  const monthVehicleTrips = useMemo(()=>
+    (vehicleTrips||[]).filter(t=>(t.trip_date||"").slice(0,7)===month)
+  ,[vehicleTrips, month]);
+
+  // Job names come from the invoices themselves (they snapshot job_name at
+  // completion). A trip can be logged against a job that isn't completed yet
+  // and so has no invoice — those show as "not yet completed" rather than a
+  // blank, since the trip is real either way and the cost still counts.
+  const jobNameById = useMemo(()=>
+    Object.fromEntries((invoices||[]).map(i=>[i.job_id, i.job_name]))
+  ,[invoices]);
+
+  const totalVehicle = monthVehicleTrips.reduce((s,t)=>s+(t.trip_cost||0),0);
+  const totalVehicleKm = monthVehicleTrips.reduce((s,t)=>s+(t.km||0),0);
+
+  const totalInvoiced = monthInvoices.reduce((s,i)=>s+i.total_cost,0) + monthProjectInvoices.reduce((s,i)=>s+i.total_cost,0) + totalVehicle;
   const totalLabor    = monthInvoices.reduce((s,i)=>s+i.labor_cost,0);
   const totalMaterial = monthInvoices.reduce((s,i)=>s+i.material_cost,0) + monthProjectInvoices.reduce((s,i)=>s+i.material_cost,0);
 
@@ -3201,8 +3222,13 @@ function InternalBillingPage({ invoices, projectInvoices, projects, workstreams,
       if(!m[k]) m[k] = {id:k, name:k, total:0, labor:0, material:0, jobs:0};
       m[k].total += inv.total_cost; m[k].labor += inv.labor_cost; m[k].material += inv.material_cost; m[k].jobs += 1;
     });
+    monthVehicleTrips.forEach(t=>{
+      const k = t.location_id;
+      if(!m[k]) m[k] = {id:k, name:k, total:0, labor:0, material:0, jobs:0};
+      m[k].total += (t.trip_cost||0); m[k].vehicle = (m[k].vehicle||0) + (t.trip_cost||0);
+    });
     return Object.values(m).sort((a,b)=>b.total-a.total);
-  },[monthInvoices, monthProjectInvoices]);
+  },[monthInvoices, monthProjectInvoices, monthVehicleTrips]);
 
   // Project progress logs aren't destination-scoped (only project/lodge),
   // so they can't be merged into the per-destination job breakdown below —
@@ -3285,6 +3311,9 @@ function InternalBillingPage({ invoices, projectInvoices, projects, workstreams,
         <div style={{fontSize:10,color:T.muted,marginTop:2}}>{gap==null?"":gap>0?"Idle/unbilled labor cost":"Fully recovered"}</div></div>
       <div className="strip-item"><div className="strip-label">Jobs / Logs Invoiced</div>
         <div className="strip-val">{monthInvoices.length} / {monthProjectInvoices.length}</div></div>
+      <div className="strip-item"><div className="strip-label">Vehicle</div>
+        <div className="strip-val" style={{color:totalVehicle?T.gold:T.border}}>{totalVehicle?fmtR(totalVehicle):"—"}</div>
+        <div style={{fontSize:10,color:T.muted,marginTop:2}}>{fmtN(totalVehicleKm)} km on job cards</div></div>
     </div>
     {deptCostErr && (
       <div style={{fontSize:11,color:T.warn,marginBottom:14}}>
@@ -3402,6 +3431,31 @@ function InternalBillingPage({ invoices, projectInvoices, projects, workstreams,
         {sortedProjectInvoices.length===0 && <tr><td colSpan={7} className="empty">No project logs invoiced this month</td></tr>}
       </tbody>
     </table></div>
+
+    {monthVehicleTrips.length > 0 && (<>
+      <div style={{fontSize:11,letterSpacing:".08em",textTransform:"uppercase",color:T.gold,fontWeight:700,margin:"18px 0 8px"}}>Vehicle Trips on Job Cards</div>
+      <div style={{fontSize:12,color:T.muted,marginBottom:8,lineHeight:1.6}}>
+        Trips logged in the Operations app against one of these job cards, costed at that vehicle's own
+        running rate. This is what makes an internal invoice reflect the real cost of getting someone to
+        the job, not just their time and the parts they fitted. A vehicle with no rate set shows R0 —
+        set one on Operations &rarr; Fleet.
+      </div>
+      <div className="tbl-wrap"><table className="tbl">
+        <thead><tr><th>Date</th><th>Job</th><th>Driver</th><th className="num">KM</th><th className="num">Rate</th><th className="num">Cost</th></tr></thead>
+        <tbody>
+          {[...monthVehicleTrips].sort((a,b)=>(b.trip_date||"").localeCompare(a.trip_date||"")).map(t=>(
+            <tr key={t.id}>
+              <td className="mono" style={{fontSize:11}}>{t.trip_date}</td>
+              <td style={{fontWeight:600}}>{jobNameById[t.job_id]||<span style={{color:T.muted,fontWeight:400,fontSize:12}}>not yet completed</span>}</td>
+              <td style={{fontSize:12,color:T.muted}}>{t.driver_name}</td>
+              <td className="num">{fmtN(t.km)}</td>
+              <td className="num" style={{color:T.muted}}>{t.cost_per_km!=null?fmtR(t.cost_per_km):"\u2014"}</td>
+              <td className="num" style={{fontWeight:700,color:t.trip_cost?T.gold:T.border}}>{t.trip_cost?fmtR(t.trip_cost):"\u2014"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table></div>
+    </>)}
 
     {openProjectInvoice && (
       <div className="overlay" onClick={e=>e.target===e.currentTarget&&setOpenProjectInvoice(null)}>
@@ -4559,6 +4613,8 @@ function AuthenticatedApp() {
   // log rather than one per completed job, since Projects work has its own
   // separate completion flow. See generateProgressInvoice().
   const [projectInvoices, setProjectInvoices]   = useState([]);
+  // Vehicle trips billed to a job card (2026-08-27) — see Internal Billing.
+  const [vehicleTrips, setVehicleTrips] = useState([]);
   const [billingSettings,  setBillingSettings]  = useState(null);
   // Projects (2026-08-19) — company-wide, not per-location like allData,
   // same reasoning as jobMaterials/templateMaterials above: these are
@@ -4601,7 +4657,7 @@ function AuthenticatedApp() {
       const[itemRows,purchRows,issueRows,countRows,destRows,jobRows,tplRows,jobMatRows,tplMatRows,slipRows,
             projectRows,workstreamRows,workstreamStatusRows,progressLogRows,progressMatRows,progressCrewRows,
             hrEmployeeRows,hrScheduleLocationRows,hrLeaveRows,creditNoteRows,
-            jobInvoiceRows,billingSettingsRows,projectInvoiceRows]=await Promise.all([
+            jobInvoiceRows,billingSettingsRows,projectInvoiceRows,vehicleTripRows]=await Promise.all([
         sb.select("maint_items", `active=eq.true&${cf}&order=sort_order.asc`),
         sb.select("maint_purchases", cf),
         sb.select("maint_issues", cf),
@@ -4625,6 +4681,12 @@ function AuthenticatedApp() {
         sb.select("maint_job_invoices", cf).catch(()=>[]),
         sb.select("maintenance_billing_settings", cf).catch(()=>[]),
         sb.select("project_progress_invoices", cf).catch(()=>[]),
+        // Vehicle Register (2026-08-27) — trips logged in the Ops app against
+        // one of this app's job cards. Cross-app read, same Supabase project.
+        // Only job-linked trips matter here; the rest are Ops's own business.
+        // .catch(()=>[]) so this app still works for companies that don't have
+        // the vehicle register turned on.
+        sb.select("vehicle_trips", `${cf}&job_id=not.is.null`).catch(()=>[]),
       ]);
       const slipMap={}; (slipRows||[]).forEach(s=>{slipMap[s.id]=s;});
       setSlips(slipMap);
@@ -4656,6 +4718,7 @@ function AuthenticatedApp() {
       setJobInvoices((jobInvoiceRows||[]).map(r=>({...r,labor_cost:+r.labor_cost,material_cost:+r.material_cost,total_cost:+r.total_cost})));
       setBillingSettings((billingSettingsRows||[])[0]||null);
       setProjectInvoices((projectInvoiceRows||[]).map(r=>({...r,labor_cost:+r.labor_cost,material_cost:+r.material_cost,total_cost:+r.total_cost})));
+      setVehicleTrips((vehicleTripRows||[]).map(r=>({...r,km:+r.km,trip_cost:r.trip_cost==null?0:+r.trip_cost})));
     }catch(e){setLoadErr(e.message);}
     finally{setLoading(false);}
   },[companyId]);
@@ -4903,7 +4966,7 @@ function AuthenticatedApp() {
                                        hrEmployees={hrEmployees} hrScheduleLocations={hrScheduleLocations} hrLeave={hrLeave}
                                        itemsByLoc={allData.items} purchasesByLoc={allData.purchases}
                                        isAdmin={isAdmin} companyId={companyId}/>}
-          {page==="billing"      && isAdmin && <InternalBillingPage invoices={jobInvoices} projectInvoices={projectInvoices}
+          {page==="billing"      && isAdmin && <InternalBillingPage invoices={jobInvoices} projectInvoices={projectInvoices} vehicleTrips={vehicleTrips}
                                        projects={projects} workstreams={workstreams} billingSettings={billingSettings}
                                        setBillingSettings={setBillingSettings} companyId={companyId}/>}
           {page==="templates"    && isAdmin && <JobTemplates locId={locId} templates={templates} setTemplates={setTemplates}
