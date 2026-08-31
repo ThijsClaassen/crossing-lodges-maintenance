@@ -178,17 +178,16 @@ function Dashboard({ items, purchases, issues, counts }) {
 function StockItems({ locId, items, setItems, companyId }) {
   const [showForm,setShowForm]=useState(false);
   const [editId,setEditId]=useState(null);
-  const [newCategory,setNewCategory]=useState(false);
   const blank={item_code:"",description:"",category:"",storeroom:"",shelf:"",position:"",unit:"ea",open_qty:"",open_cost:"",min_units:"",max_units:""};
   const [form,setForm]=useState(blank);
   const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
 
   const categories = useMemo(()=>[...new Set(items.map(i=>i.category).filter(Boolean))].sort(),[items]);
 
-  const openAdd=()=>{setForm(blank);setEditId(null);setNewCategory(categories.length===0);setShowForm(true);};
+  const openAdd=()=>{setForm(blank);setEditId(null);setShowForm(true);};
   const openEdit=i=>{
     setForm({...i,open_qty:String(i.open_qty),open_cost:String(i.open_cost),min_units:String(i.min_units),max_units:String(i.max_units)});
-    setEditId(i.id);setNewCategory(!i.category || !categories.includes(i.category));setShowForm(true);
+    setEditId(i.id);setShowForm(true);
   };
   const save=async()=>{
     if(!form.description?.trim())return;
@@ -269,27 +268,16 @@ function StockItems({ locId, items, setItems, companyId }) {
           </div>
           <div className="field"><label>Description</label><input type="text" value={form.description||""} onChange={f("description")}/></div>
 
+          {/* Was a dropdown-or-type-new pair with no trim and no snapping, so
+              typing "plumbing" next to an existing "Plumbing" still made a
+              second category. PickOrAdd folds those together. */}
           <div className="field"><label>Category</label>
-            {newCategory || categories.length===0 ? (
-              <div style={{display:"flex",gap:7}}>
-                <input type="text" placeholder="e.g. Plumbing" value={form.category||""} onChange={f("category")} style={{flex:1}}/>
-                {categories.length>0 && (
-                  <button className="btn btn-ghost btn-sm" type="button" onClick={()=>{setNewCategory(false);setForm(p=>({...p,category:""}));}}>
-                    Choose existing
-                  </button>
-                )}
-              </div>
-            ) : (
-              <div style={{display:"flex",gap:7}}>
-                <select value={form.category||""} onChange={f("category")} style={{flex:1}}>
-                  <option value="">-- Select category --</option>
-                  {categories.map(c=><option key={c} value={c}>{c}</option>)}
-                </select>
-                <button className="btn btn-ghost btn-sm" type="button" onClick={()=>{setNewCategory(true);setForm(p=>({...p,category:""}));}}>
-                  + New
-                </button>
-              </div>
-            )}
+            <PickOrAdd
+              value={form.category}
+              options={categories}
+              onChange={v=>setForm(p=>({...p,category:v}))}
+              placeholder="e.g. Plumbing"
+            />
           </div>
 
           <div className="grid3">
@@ -391,6 +379,73 @@ function Destinations({ locId, destinations, setDestinations, companyId }) {
 // help there. `options` is [{ value, label }].
 const searchSelectInput = {width:"100%",background:"rgba(0,0,0,.25)",border:`1px solid ${T.border}`,borderRadius:6,
   padding:"10px 11px",color:T.cream,fontFamily:"'Inter',sans-serif",fontSize:16,outline:"none"};
+
+// Pick an existing value or add a new one — for short free-text fields where
+// the same thing gets retyped over and over (supplier names, categories).
+//
+// Added 2026-08-31 after the Food app's category field drifted into SIX
+// spellings of "Meats / Fish". Supplier is the more expensive version of that
+// problem here: the Finance Dashboard's supplier reconciliation matches
+// statements against purchase rows across five apps by supplier name, so
+// "Buco" and "BUCO " land as two suppliers and a statement silently fails to
+// reconcile against half its own invoices.
+//
+// The important bit is `confirm()`: a newly typed value SNAPS to an existing
+// one when the two differ only by case, spacing or punctuation. Offering a
+// dropdown alone does not prevent drift — people still click "+ New" and
+// type a variant. Trimming alone does not either, since every one of those
+// six Food spellings was already clean text.
+function PickOrAdd({ value, options, onChange, placeholder = "New value" }) {
+  const [adding, setAdding] = useState(false);
+  const [text, setText] = useState("");
+
+  function confirm() {
+    const typed = text.trim();
+    if (typed) {
+      const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const existing = options.find(o => norm(o) === norm(typed));
+      onChange(existing || typed);
+    }
+    setAdding(false); setText("");
+  }
+
+  if (adding || options.length === 0) {
+    return (
+      <div style={{display:"flex",gap:7}}>
+        <input
+          type="text" autoFocus={adding} placeholder={placeholder} value={value || ""}
+          onChange={e=>{ setText(e.target.value); onChange(e.target.value); }}
+          onBlur={()=>{ if (text.trim()) confirm(); }}
+          onKeyDown={e=>{ if(e.key==="Enter"){ e.preventDefault(); confirm(); } }}
+          style={{flex:1}}
+        />
+        {options.length>0 && (
+          <button className="btn btn-ghost btn-sm" type="button"
+            onClick={()=>{ setAdding(false); setText(""); onChange(""); }}>
+            Choose existing
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{display:"flex",gap:7}}>
+      <select value={value || ""} onChange={e=>onChange(e.target.value)} style={{flex:1}}>
+        <option value="">-- Select --</option>
+        {options.map(o=><option key={o} value={o}>{o}</option>)}
+        {/* A value saved before this control existed must still show, even if
+            nothing else uses it — otherwise the select renders blank and the
+            next save quietly wipes it. */}
+        {value && !options.includes(value) && <option value={value}>{value}</option>}
+      </select>
+      <button className="btn btn-ghost btn-sm" type="button"
+        onClick={()=>{ setAdding(true); setText(""); onChange(""); }}>
+        + New
+      </button>
+    </div>
+  );
+}
 
 function SearchableSelect({ value, onChange, options, placeholder = "Select…", style, inputStyle, disabled }) {
   const [open, setOpen] = useState(false);
@@ -803,6 +858,13 @@ function MemberPurchaseModal({ companyId, locId, onClose, pendingRefresh, onBill
 
 function Purchases({ locId, items, purchases, setPurchases, isAdmin, companyId, slips, onSlipAttached, creditNotes, setCreditNotes, setIssues }) {
   const { memberBillingEnabled } = useCompany();
+  // Supplier names already used here — the list people should be picking from
+  // instead of retyping. Drawn from both tables so a supplier first seen on a
+  // credit note is still offered on a purchase.
+  const supplierOptions = useMemo(()=>[...new Set([
+    ...(purchases||[]).map(x=>x.supplier),
+    ...(creditNotes||[]).map(x=>x.supplier),
+  ].filter(Boolean))].sort(),[purchases,creditNotes]);
   const [showMemberForm,setShowMemberForm]=useState(false);
   const [memberPendingRefresh,setMemberPendingRefresh]=useState(0);
   const [showForm,setShowForm]=useState(false);
@@ -897,7 +959,10 @@ function Purchases({ locId, items, purchases, setPurchases, isAdmin, companyId, 
             <div className="field"><label>Date</label><DateField value={form.date} onChange={v=>setForm(p=>({...p,date:v}))}/></div>
             <div className="field"><label>Qty Purchased</label><input type="number" inputMode="decimal" value={form.qty} onChange={f("qty")}/></div>
             <div className="field"><label>Total Cost (R excl VAT)</label><input type="number" inputMode="decimal" step="0.01" value={form.total_cost} onChange={f("total_cost")}/></div>
-            <div className="field"><label>Supplier</label><input type="text" value={form.supplier} onChange={f("supplier")}/></div>
+            <div className="field"><label>Supplier</label>
+              <PickOrAdd value={form.supplier} options={supplierOptions}
+                onChange={v=>setForm(p=>({...p,supplier:v}))} placeholder="New supplier name"/>
+            </div>
           </div>
           {form.qty&&form.total_cost&&(
             <div className="info-box">
@@ -1044,6 +1109,9 @@ function Issues({ locId, items, issues, setIssues, destinations, purchases, jobs
 // supplier_credit_notes table so Finance Dashboard can cross-check it
 // against the supplier's statement, same as purchases already are.
 function CreditNotes({ locId, items, creditNotes, setCreditNotes, setIssues, isAdmin, companyId, slips, onSlipAttached }) {
+  const supplierOptions = useMemo(()=>[...new Set(
+    (creditNotes||[]).map(x=>x.supplier).filter(Boolean)
+  )].sort(),[creditNotes]);
   const [showForm,setShowForm]=useState(false);
   const blank={item_id:"",date:today(),qty:"",unit_cost:"",supplier:"",reason:"wrong_item",credit_note_number:"",notes:"",pendingSlipBlob:null,pendingSlipName:""};
   const [form,setForm]=useState(blank);
@@ -1156,7 +1224,10 @@ function CreditNotes({ locId, items, creditNotes, setCreditNotes, setIssues, isA
             <div className="field"><label>Date</label><DateField value={form.date} onChange={v=>setForm(p=>({...p,date:v}))}/></div>
             <div className="field"><label>Qty returned</label><input type="number" inputMode="decimal" value={form.qty} onChange={f("qty")}/></div>
             <div className="field"><label>Unit cost (R excl VAT)</label><input type="number" inputMode="decimal" step="0.01" value={form.unit_cost} onChange={f("unit_cost")}/></div>
-            <div className="field"><label>Supplier</label><input type="text" value={form.supplier} onChange={f("supplier")}/></div>
+            <div className="field"><label>Supplier</label>
+              <PickOrAdd value={form.supplier} options={supplierOptions}
+                onChange={v=>setForm(p=>({...p,supplier:v}))} placeholder="New supplier name"/>
+            </div>
           </div>
           <div className="field"><label>Reason</label>
             <select value={form.reason} onChange={f("reason")}>
