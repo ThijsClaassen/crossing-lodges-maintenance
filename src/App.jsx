@@ -1087,7 +1087,7 @@ function Issues({ locId, items, issues, setIssues, destinations, purchases, jobs
               <option value="">-- Select destination --</option>
               {locDests.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}
             </select>
-            {locDests.length===0&&<div style={{fontSize:11,color:T.warn,marginTop:5}}>No destinations set up yet. Go to Management > Destinations.</div>}
+            {locDests.length===0&&<div style={{fontSize:11,color:T.warn,marginTop:5}}>No destinations set up yet. Go to Management → Destinations.</div>}
           </div>
           <div className="field"><label>Notes</label><input type="text" value={form.notes} onChange={f("notes")}/></div>
           <div style={{display:"flex",gap:9}}>
