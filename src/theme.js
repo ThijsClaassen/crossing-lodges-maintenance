@@ -248,10 +248,10 @@ export const css = `
 
 
 
-  @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&family=Space+Mono&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600&family=Inter:wght@300;400;500;600;700&display=swap');
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:${T.bg};color:${T.cream};font-family:'Inter',sans-serif;min-height:100vh;-webkit-tap-highlight-color:transparent}
-  .mono{font-family:'Space Mono',monospace}
+  .mono{font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums}
   .shell{display:flex;height:100vh;overflow:hidden}
   .sidebar{width:230px;background:${T.panel};border-right:1px solid ${T.border};display:flex;flex-direction:column;flex-shrink:0}
   .main{flex:1;overflow-y:auto;background:${T.bg}}
@@ -280,7 +280,7 @@ export const css = `
   .kpi{background:${T.panel};border:1px solid ${T.border};border-radius:8px;padding:14px 16px;position:relative;overflow:hidden}
   .kpi::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--accent,${T.gold})}
   .kpi-label{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:${T.muted};font-weight:600;margin-bottom:5px}
-  .kpi-value{font-size:21px;font-weight:700;color:${T.cream};font-family:'Space Mono',monospace}
+  .kpi-value{font-size:21px;font-weight:700;color:${T.cream};font-family:'Inter',sans-serif}
   .kpi-sub{font-size:11px;color:${T.muted};margin-top:2px}
   .section{padding:20px 26px}
   .section-title{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:${T.gold};margin-bottom:10px;opacity:.9}
@@ -289,7 +289,7 @@ export const css = `
   .tbl th{text-align:left;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:${T.muted};font-weight:600;padding:7px 10px;border-bottom:1px solid ${T.border};white-space:nowrap}
   .tbl td{padding:8px 10px;border-bottom:1px solid rgba(58,56,80,.5);color:${T.cream};vertical-align:middle}
   .tbl tr:hover td{background:rgba(184,147,90,.04)}
-  .tbl .num{font-family:'Space Mono',monospace;text-align:right}
+  .tbl .num{font-family:'Inter',sans-serif;text-align:right}
   .ok{color:${T.ok}} .bad{color:${T.danger}} .warn{color:${T.warn}}
   .badge{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:3px;letter-spacing:.04em}
   .badge-ok{background:rgba(90,155,114,.18);color:${T.ok};border:1px solid rgba(90,155,114,.3)}
@@ -322,12 +322,12 @@ export const css = `
   .strip{background:rgba(184,147,90,.06);border:1px solid rgba(184,147,90,.2);border-radius:8px;padding:11px 14px;display:flex;gap:18px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
   .strip-item{text-align:center;min-width:75px}
   .strip-label{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:${T.muted};font-weight:600}
-  .strip-val{font-size:16px;font-weight:700;color:${T.gold};font-family:'Space Mono',monospace;margin-top:1px}
+  .strip-val{font-size:16px;font-weight:700;color:${T.gold};font-family:'Inter',sans-serif;margin-top:1px}
   .info-box{background:rgba(184,147,90,.08);border:1px solid rgba(184,147,90,.25);border-radius:6px;padding:8px 12px;display:flex;justify-content:space-between;align-items:center;margin-bottom:11px}
   .empty{padding:32px;text-align:center;color:${T.muted};font-size:13px}
-  .count-input{width:90px;background:rgba(0,0,0,.3);border:1px solid ${T.border};border-radius:6px;padding:7px 10px;color:${T.cream};font-family:'Space Mono',monospace;font-size:14px;text-align:right;outline:none;transition:border .15s}
+  .count-input{width:90px;background:rgba(0,0,0,.3);border:1px solid ${T.border};border-radius:6px;padding:7px 10px;color:${T.cream};font-family:'Inter',sans-serif;font-size:14px;text-align:right;outline:none;transition:border .15s}
   .count-input:focus{border-color:${T.gold}}
-  .reorder-qty{display:inline-block;background:rgba(192,88,88,.18);color:${T.danger};border:1px solid rgba(192,88,88,.3);border-radius:4px;font-family:'Space Mono',monospace;font-size:12px;font-weight:700;padding:2px 10px}
+  .reorder-qty{display:inline-block;background:rgba(192,88,88,.18);color:${T.danger};border:1px solid rgba(192,88,88,.3);border-radius:4px;font-family:'Inter',sans-serif;font-size:12px;font-weight:700;padding:2px 10px}
   .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:8px}
   .cal-head{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:${T.muted};font-weight:600;text-align:center;padding:5px 0}
   .cal-cell{background:${T.panel};border:1px solid ${T.border};border-radius:6px;min-height:88px;padding:5px 4px;display:flex;flex-direction:column;gap:3px}
@@ -335,7 +335,7 @@ export const css = `
   .cal-today{border-color:${T.gold};box-shadow:0 0 0 1px rgba(184,147,90,.3)}
   .cal-drop-target{border-color:${T.ok};background:rgba(90,155,114,.1);box-shadow:0 0 0 1px rgba(90,155,114,.4)}
   .cal-job[draggable="true"]:active{opacity:.6}
-  .cal-date{font-family:'Space Mono',monospace;font-size:11px;color:${T.muted};padding-left:3px}
+  .cal-date{font-family:'Inter',sans-serif;font-size:11px;color:${T.muted};padding-left:3px}
   .cal-today .cal-date{color:${T.gold};font-weight:700}
   .cal-job{background:rgba(0,0,0,.28);border:none;border-radius:3px;padding:3px 5px;font-family:'Inter',sans-serif;font-size:10px;font-weight:500;text-align:left;cursor:pointer;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;width:100%}
   .cal-job:hover{background:rgba(184,147,90,.15)}

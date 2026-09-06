@@ -967,7 +967,7 @@ function Purchases({ locId, items, purchases, setPurchases, isAdmin, companyId, 
           {form.qty&&form.total_cost&&(
             <div className="info-box">
               <span style={{fontSize:11,color:T.muted}}>Cost per unit</span>
-              <strong style={{fontFamily:"'Space Mono'",color:T.ok}}>{fmtR((parseFloat(form.total_cost)||0)/(parseFloat(form.qty)||1))}</strong>
+              <strong style={{fontFamily:"'Inter',sans-serif",color:T.ok}}>{fmtR((parseFloat(form.total_cost)||0)/(parseFloat(form.qty)||1))}</strong>
             </div>
           )}
           <div className="field"><label>Notes</label><input type="text" value={form.notes} onChange={f("notes")}/></div>
@@ -1238,7 +1238,7 @@ function CreditNotes({ locId, items, creditNotes, setCreditNotes, setIssues, isA
           {form.qty&&form.unit_cost&&(
             <div className="info-box">
               <span style={{fontSize:11,color:T.muted}}>Total credit</span>
-              <strong style={{fontFamily:"'Space Mono'",color:T.ok}}>{fmtR(totalCreditPreview)}</strong>
+              <strong style={{fontFamily:"'Inter',sans-serif",color:T.ok}}>{fmtR(totalCreditPreview)}</strong>
             </div>
           )}
           <div className="field"><label>Notes</label><input type="text" value={form.notes} onChange={f("notes")}/></div>
@@ -1390,7 +1390,7 @@ function Orders({ items, purchases, issues, counts, jobs, jobMaterials, template
             <tr key={item.id}>
               <td>
                 <div style={{fontWeight:600}}>{item.description}</div>
-                <div style={{fontSize:10,color:T.muted,fontFamily:"'Space Mono'"}}>{item.item_code}</div>
+                <div style={{fontSize:10,color:T.muted,fontFamily:"'Inter',sans-serif"}}>{item.item_code}</div>
               </td>
               <td style={{fontSize:11,color:T.muted}}>{[item.storeroom,item.shelf].filter(Boolean).join(" / ")}</td>
               <td className="num" style={{color:T.muted}}>{fmtN(item.min_units)}</td>
@@ -1434,7 +1434,7 @@ function Orders({ items, purchases, issues, counts, jobs, jobMaterials, template
             <tr key={r.item.id}>
               <td>
                 <div style={{fontWeight:600}}>{r.item.description}</div>
-                <div style={{fontSize:10,color:T.muted,fontFamily:"'Space Mono'"}}>{r.item.item_code||""}</div>
+                <div style={{fontSize:10,color:T.muted,fontFamily:"'Inter',sans-serif"}}>{r.item.item_code||""}</div>
               </td>
               <td className="num">{fmtN(r.needed)} <span style={{fontSize:10,color:T.muted}}>{r.item.unit}</span></td>
               <td className="num" style={{color:T.muted}}>{fmtN(r.available)}</td>
@@ -1467,7 +1467,7 @@ function Orders({ items, purchases, issues, counts, jobs, jobMaterials, template
       </table></div>
       <div className="info-box" style={{marginTop:12}}>
         <span style={{fontSize:11,color:T.muted}}>Estimated cost to cover job shortfalls</span>
-        <strong style={{fontFamily:"'Space Mono'",color:T.warn}}>{fmtR(forecastValue)}</strong>
+        <strong style={{fontFamily:"'Inter',sans-serif",color:T.warn}}>{fmtR(forecastValue)}</strong>
       </div>
     </>)}
 
@@ -1731,7 +1731,7 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
     {view==="month" ? (<>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
         <button className="btn btn-ghost btn-sm" onClick={()=>setCursor(c=>new Date(c.getFullYear(),c.getMonth()-1,1))}>&#8592; Prev</button>
-        <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:19,fontWeight:600,color:T.cream}}>
+        <div style={{fontFamily:"'Inter',sans-serif",fontSize:19,fontWeight:600,color:T.cream}}>
           {MONTH_NAMES[cursor.getMonth()]} {cursor.getFullYear()}
         </div>
         <button className="btn btn-ghost btn-sm" onClick={()=>setCursor(c=>new Date(c.getFullYear(),c.getMonth()+1,1))}>Next &#8594;</button>
@@ -1958,7 +1958,7 @@ function JobDetail({ job, onClose, locId, jobs, jobMaterials, items, purchases, 
         {job.status==="completed" && (
           <div className="info-box" style={{background:"rgba(90,155,114,.1)",border:`1px solid rgba(90,155,114,.3)`}}>
             <span style={{fontSize:11,color:T.muted}}>Completed</span>
-            <strong style={{color:T.ok,fontFamily:"'Space Mono'"}}>{job.completed_date}</strong>
+            <strong style={{color:T.ok,fontFamily:"'Inter',sans-serif"}}>{job.completed_date}</strong>
           </div>
         )}
         {job.completion_notes && (
@@ -2247,7 +2247,7 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates, hr
         {willRepeat && (
           <div className="info-box">
             <span style={{fontSize:11,color:T.muted}}>Next occurrence will be scheduled for</span>
-            <strong style={{fontFamily:"'Space Mono'",color:T.gold}}>{nextPreview}</strong>
+            <strong style={{fontFamily:"'Inter',sans-serif",color:T.gold}}>{nextPreview}</strong>
           </div>
         )}
 
@@ -3025,7 +3025,7 @@ function DestinationDetail({ row, onClose }) {
                 <tr key={r.itemId}>
                   <td style={{fontWeight:600}}>
                     {r.item?.description || <span style={{color:T.muted}}>Deleted item</span>}
-                    {r.item?.item_code && <div style={{fontSize:10,color:T.muted,fontFamily:"'Space Mono'"}}>{r.item.item_code}</div>}
+                    {r.item?.item_code && <div style={{fontSize:10,color:T.muted,fontFamily:"'Inter',sans-serif"}}>{r.item.item_code}</div>}
                   </td>
                   <td className="num">{fmtN(r.qty)} <span style={{fontSize:10,color:T.muted}}>{r.item?.unit||""}</span></td>
                   <td className="num" style={{color:T.muted}}>{fmtR(r.unitCost)}</td>
@@ -3362,11 +3362,11 @@ function InternalBillingPage({ invoices, projectInvoices, vehicleTrips, projects
     <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14,flexWrap:"wrap"}}>
       <label style={{fontSize:11,color:T.muted,textTransform:"uppercase",letterSpacing:".08em"}}>Month</label>
       <input type="month" value={month} onChange={e=>setMonth(e.target.value)}
-        style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:6,color:T.cream,fontFamily:"'Space Mono'",fontSize:13,padding:"6px 10px"}}/>
+        style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:6,color:T.cream,fontFamily:"'Inter',sans-serif",fontSize:13,padding:"6px 10px"}}/>
       <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8}}>
         <label style={{fontSize:11,color:T.muted,textTransform:"uppercase",letterSpacing:".08em"}}>Standard Hours/Month</label>
         <input type="number" inputMode="decimal" value={hoursInput} onChange={e=>setHoursInput(e.target.value)}
-          style={{width:70,background:T.panel,border:`1px solid ${T.border}`,borderRadius:6,color:T.cream,fontFamily:"'Space Mono'",fontSize:13,padding:"6px 8px"}}/>
+          style={{width:70,background:T.panel,border:`1px solid ${T.border}`,borderRadius:6,color:T.cream,fontFamily:"'Inter',sans-serif",fontSize:13,padding:"6px 8px"}}/>
         <button className="btn btn-ghost" disabled={savingHours} onClick={saveHours}>{savingHours?"Saving…":"Save"}</button>
       </div>
     </div>
@@ -3726,7 +3726,7 @@ function ProjectsPage({ locId, projects, workstreams, workstreamStatus, progress
           <div key={p.id} onClick={()=>setOpenProjectId(p.id)}
             style={{background:"rgba(0,0,0,.2)",border:`1px solid ${T.border}`,borderRadius:10,padding:16,cursor:"pointer"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
-              <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:18,fontWeight:600,color:T.cream}}>{p.name}</div>
+              <div style={{fontFamily:"'Inter',sans-serif",fontSize:18,fontWeight:600,color:T.cream}}>{p.name}</div>
               {loc && <span className="badge badge-neu" style={{flexShrink:0,marginLeft:8}}>{loc.id}</span>}
             </div>
             <div style={{fontSize:11,color:T.muted,marginBottom:10}}>
