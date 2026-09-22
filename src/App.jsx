@@ -4,6 +4,8 @@ import { subscribe as subscribeOffline, listRejected, retryRejected, discardEntr
 import { supabase } from "./supabaseClient.js";
 import { T, css } from "./theme.js";
 import { LOGO_DATA } from "./logo.js";
+import { SUPABASE_URL } from "./supabaseClient.js";
+import { resolveCompanyLogo, logoStyle } from "./companyLogo.js";
 import Login from "./Login.jsx";
 import SetPassword from "./SetPassword.jsx";
 import { CompanyProvider, useCompany } from "./CompanyContext.jsx";
@@ -4783,6 +4785,18 @@ export default function App() {
 }
 
 function AuthenticatedApp() {
+  const { company } = useCompany();
+
+  // The client's logo if they have one, ours if they don't (2026-09-22).
+  // The read the logo feature shipped without: the settings page wrote
+  // logo_path and nothing consumed it, so a client could upload their logo
+  // and still see Crossing Lodges on every screen.
+  const brand = resolveCompanyLogo({
+    company,
+    supabaseUrl: SUPABASE_URL,
+    fallback: LOGO_DATA,
+    fallbackAlt: "Crossing Lodges",
+  });
   const {
     loading: companyLoading,
     error: companyError,
@@ -4996,7 +5010,7 @@ function AuthenticatedApp() {
 
   if(loading)return(<><style>{css}</style>
     <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100vh",gap:14,background:T.bg}}>
-      <img src={LOGO_DATA} alt="" style={{width:150,filter:"brightness(0) invert(1) opacity(.8)"}}/>
+      <img src={brand.src} alt={brand.alt} style={{width:150, ...logoStyle(brand.isClientLogo)}} onError={(e)=>{ if(e.target.src!==LOGO_DATA) e.target.src=LOGO_DATA; }}/>
       <div style={{fontSize:12,color:T.muted,letterSpacing:".1em",textTransform:"uppercase"}}>Loading stock data...</div>
       <div style={{width:200,height:3,background:T.border,borderRadius:2,overflow:"hidden"}}>
         <div style={{height:"100%",background:T.gold,width:"40%",animation:"ldg 1.2s ease-in-out infinite"}}/>
@@ -5038,7 +5052,7 @@ function AuthenticatedApp() {
       {/* ── SIDEBAR ── */}
       <div className="sidebar">
         <div className="logo">
-          <img src={LOGO_DATA} alt="Crossing Lodges" style={{width:136,filter:"brightness(0) invert(1) opacity(.88)"}}/>
+          <img src={brand.src} alt={brand.alt} style={{width:136, ...logoStyle(brand.isClientLogo)}} onError={(e)=>{ if(e.target.src!==LOGO_DATA) e.target.src=LOGO_DATA; }}/>
           <div className="logo-sub">Maintenance</div>
         </div>
         {availableCompanies.length > 1 && (
