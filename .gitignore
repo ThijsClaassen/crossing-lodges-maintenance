@@ -4,3 +4,7 @@ dist
 .env.local
 .vercel
 .DS_Store
+
+# Stale copies left by the editing mount when a file is rewritten while open.
+# Junk, never source — safe to delete, and never worth committing.
+.fuse_hidden*

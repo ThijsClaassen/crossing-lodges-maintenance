@@ -10,6 +10,8 @@ import { CompanyProvider, useCompany } from "./CompanyContext.jsx";
 import { uploadPurchaseSlip, getSlipUrl } from "./slipUpload.js";
 import { availableMaintenanceStaff, normalizeDepartment } from "./maintenanceStaffEngine.js";
 import { listMembers as listBillingMembers, logMemberPurchase, listPendingCharges, addPendingCharges, billPendingCharges, deletePendingCharge } from "./memberPurchase.js";
+import { jobCostBreakdown, invoiceTotalDisagrees } from "./jobCosting.js";
+import { missingOccurrences, nextDueOnCompletion, nextDueFromOpenJobs, describeGeneration } from "./recurrence.js";
 
 const fmtR  = n=>`R ${Number(n||0).toLocaleString("en-ZA",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 const fmtN  = n=>Number(n||0).toLocaleString("en-ZA",{maximumFractionDigits:3});
@@ -1603,7 +1605,8 @@ function buildForecast({ jobs, jobMaterials, templates, templateMaterials, items
 // ─── CALENDAR ────────────────────────────────────────────────────────────────
 function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destinations,
                     templates, setJobs, setJobMaterials, setIssues, setTemplates, isAdmin, companyId,
-                    projects, workstreamStatus, progressLogs, workstreams, hrEmployees }) {
+                    projects, workstreamStatus, progressLogs, workstreams, hrEmployees,
+                    jobInvoices, vehicleTrips }) {
   const [cursor, setCursor]     = useState(()=>{ const d=new Date(); return new Date(d.getFullYear(),d.getMonth(),1); });
   const [view, setView]         = useState("month");   // month | list
   const [openJob, setOpenJob]   = useState(null);
@@ -1852,7 +1855,8 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
         locId={locId} jobs={jobs} jobMaterials={jobMaterials} items={items}
         purchases={purchases} issues={issues} templates={templates} destinations={destinations}
         setJobs={setJobs} setJobMaterials={setJobMaterials} setIssues={setIssues}
-        setTemplates={setTemplates} isAdmin={isAdmin} companyId={companyId} hrEmployees={hrEmployees}/>
+        setTemplates={setTemplates} isAdmin={isAdmin} companyId={companyId} hrEmployees={hrEmployees}
+        jobInvoices={jobInvoices} vehicleTrips={vehicleTrips}/>
     )}
 
     {showAdHoc && (
@@ -1864,11 +1868,19 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
 
 // ─── JOB DETAIL ──────────────────────────────────────────────────────────────
 function JobDetail({ job, onClose, locId, jobs, jobMaterials, items, purchases, issues,
-                     templates, destinations, setJobs, setJobMaterials, setIssues, setTemplates, isAdmin, companyId, hrEmployees }) {
+                     templates, destinations, setJobs, setJobMaterials, setIssues, setTemplates, isAdmin, companyId, hrEmployees,
+                     jobInvoices, vehicleTrips }) {
   const [completing, setCompleting] = useState(false);
   const [editing, setEditing] = useState(false);
   const mats = jobMaterials.filter(m=>m.job_id===job.id);
   const isOpen = job.status==="scheduled"||job.status==="in_progress";
+
+  // #455. Both sources are company-wide lists already in memory; filtering
+  // here rather than querying keeps the card instant and works offline.
+  const cost = useMemo(()=>jobCostBreakdown({
+    invoice: (jobInvoices||[]).find(i=>i.job_id===job.id) || null,
+    trips:   (vehicleTrips||[]).filter(t=>t.job_id===job.id),
+  }), [jobInvoices, vehicleTrips, job.id]);
 
   const cancel = async () => {
     if(!window.confirm("Cancel this job?")) return;
@@ -1891,7 +1903,7 @@ function JobDetail({ job, onClose, locId, jobs, jobMaterials, items, purchases, 
 
   if(completing) return (
     <CompleteJob job={job} mats={mats} items={items} purchases={purchases} issues={issues}
-      locId={locId} templates={templates} hrEmployees={hrEmployees}
+      locId={locId} templates={templates} hrEmployees={hrEmployees} jobs={jobs}
       setJobs={setJobs} setJobMaterials={setJobMaterials} setIssues={setIssues} setTemplates={setTemplates}
       onDone={()=>{setCompleting(false);onClose();}} onBack={()=>setCompleting(false)} companyId={companyId}/>
   );
@@ -1925,6 +1937,43 @@ function JobDetail({ job, onClose, locId, jobs, jobMaterials, items, purchases, 
           <div style={{background:"rgba(0,0,0,.25)",border:`1px solid ${T.border}`,borderRadius:7,padding:"11px 13px",marginBottom:14}}>
             <div style={{fontSize:9,letterSpacing:".1em",textTransform:"uppercase",color:T.muted,fontWeight:600,marginBottom:5}}>Description</div>
             <div style={{fontSize:13,color:T.cream,lineHeight:1.6,whiteSpace:"pre-wrap"}}>{job.description}</div>
+          </div>
+        )}
+
+        {/* WHAT THIS JOB COST (#455, 2026-09-22). Labour and materials come
+            from the invoice written at completion; the vehicle is summed live
+            from vehicle_trips, because a trip is very often logged after the
+            job is closed and a frozen figure would miss it forever. Shown
+            whenever there is anything to show — an open job with a trip
+            against it has a real cost already. */}
+        {(cost.completed || cost.vehicle > 0) && (
+          <div style={{background:"rgba(0,0,0,.25)",border:`1px solid ${T.border}`,borderRadius:7,padding:"11px 13px",marginBottom:14}}>
+            <div style={{fontSize:9,letterSpacing:".1em",textTransform:"uppercase",color:T.muted,fontWeight:600,marginBottom:7}}>
+              What this job cost
+            </div>
+            {[["Labour",cost.labour],
+              ["Materials",cost.materials],
+              [cost.tripCount ? `Vehicle (${cost.tripCount} trip${cost.tripCount===1?"":"s"}, ${fmtN(cost.vehicleKm)} km)` : "Vehicle", cost.vehicle]].map(([l,v])=>(
+              <div key={l} style={{display:"flex",justifyContent:"space-between",fontSize:12,color:T.cream,padding:"3px 0"}}>
+                <span style={{color:T.muted}}>{l}</span><span>{fmtR(v)}</span>
+              </div>
+            ))}
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:13,fontWeight:700,color:T.gold,
+                         borderTop:`1px solid ${T.border}`,marginTop:6,paddingTop:6}}>
+              <span>Total</span><span>{fmtR(cost.total)}</span>
+            </div>
+            {!cost.completed && (
+              <div style={{fontSize:11,color:T.muted,marginTop:7,lineHeight:1.5}}>
+                This job isn&rsquo;t completed yet, so there is no labour or material cost against it —
+                the vehicle trips are already real.
+              </div>
+            )}
+            {invoiceTotalDisagrees(cost) && (
+              <div style={{fontSize:11,color:T.bad,marginTop:7,lineHeight:1.5}}>
+                The stored invoice total ({fmtR(cost.invoiceTotal)}) doesn&rsquo;t match labour plus
+                materials. Worth a look — this figure is built from the parts, not from that total.
+              </div>
+            )}
           </div>
         )}
 
@@ -1980,7 +2029,7 @@ function JobDetail({ job, onClose, locId, jobs, jobMaterials, items, purchases, 
 }
 
 // ─── COMPLETE JOB ────────────────────────────────────────────────────────────
-function CompleteJob({ job, mats, items, purchases, issues, locId, templates, hrEmployees,
+function CompleteJob({ job, mats, items, purchases, issues, locId, templates, hrEmployees, jobs,
                        setJobs, setJobMaterials, setIssues, setTemplates, onDone, onBack, companyId }) {
   const [date, setDate]   = useState(today());
   const [notes, setNotes] = useState("");
@@ -2096,9 +2145,16 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates, hr
       }
 
       // 4. If recurring, schedule the next one from the ACTUAL completion date
+      //
+      // #456 (2026-09-22): "the next one" is now a question with three
+      // answers, and nextDueOnCompletion owns all three — schedule it, skip
+      // it because a generated card already covers that date, or stop because
+      // the template's end date has passed. A template with no end date gets
+      // exactly the behaviour it had before, which is the point.
       const tpl = templates.find(t=>t.id===job.template_id);
-      if(tpl && tpl.recurrence_type!=="none" && tpl.recurrence_n>0 && tpl.active!==false){
-        const nextDue = fmtDMY(addPeriod(parseDMY(date), tpl.recurrence_type, tpl.recurrence_n));
+      const tplJobs = jobs.filter(j=>j.template_id===job.template_id && j.id!==job.id);
+      const nextDue = nextDueOnCompletion(tpl, tplJobs, date);
+      if(tpl && nextDue){
         const nextJob = {
           id: uid(), location_id: locId, template_id: tpl.id, name: tpl.name,
           description: tpl.description||null, job_type: tpl.job_type||"preventive",
@@ -2122,8 +2178,23 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates, hr
         }
         if(nextMats.length) setJobMaterials(p=>[...p, ...nextMats]);
 
-        await sb.update("maint_job_templates", tpl.id, {next_due: nextDue});
-        setTemplates(p=>p.map(t=>t.id===tpl.id?{...t,next_due:nextDue}:t));
+        // next_due follows the EARLIEST card still open, not whatever this
+        // completion happened to produce. With a generated schedule the two
+        // diverge immediately, and a template pointing at December while its
+        // cards say October makes the next Generate start in the wrong place.
+        const openAfter = [...tplJobs, nextJob].filter(j=>j.id!==job.id);
+        const followUp = nextDueFromOpenJobs(openAfter, nextDue);
+        await sb.update("maint_job_templates", tpl.id, {next_due: followUp});
+        setTemplates(p=>p.map(t=>t.id===tpl.id?{...t,next_due:followUp}:t));
+      } else if (tpl && tpl.recurrence_end_date) {
+        // Nothing new was created because the schedule was already generated.
+        // next_due still has to move off the job just completed, or the next
+        // Generate would try to recreate the day that was finished today.
+        const followUp = nextDueFromOpenJobs(tplJobs, tpl.next_due);
+        if (followUp !== tpl.next_due) {
+          await sb.update("maint_job_templates", tpl.id, {next_due: followUp});
+          setTemplates(p=>p.map(t=>t.id===tpl.id?{...t,next_due:followUp}:t));
+        }
       }
 
       onDone();
@@ -2584,7 +2655,7 @@ function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTe
   const [showForm,setShowForm] = useState(false);
   const [editId,setEditId]     = useState(null);
   const blank = {name:"",description:"",job_type:"preventive",destination_id:"",assigned_to:"",
-                 recurrence_type:"months",recurrence_n:"1",next_due:today()};
+                 recurrence_type:"months",recurrence_n:"1",next_due:today(),recurrence_end_date:""};
   const [form,setForm] = useState(blank);
   const [rows,setRows] = useState([]);
   const [busy,setBusy] = useState(false);
@@ -2595,7 +2666,8 @@ function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTe
     setForm({name:t.name,description:t.description||"",job_type:t.job_type||"preventive",
              destination_id:t.destination_id||"",assigned_to:t.assigned_to||"",
              recurrence_type:t.recurrence_type||"none",recurrence_n:String(t.recurrence_n||0),
-             next_due:t.next_due||today()});
+             next_due:t.next_due||today(),
+             recurrence_end_date:t.recurrence_end_date||""});
     setRows(templateMaterials.filter(m=>m.template_id===t.id).map(m=>{
       const it = items.find(x=>x.id===m.item_id);
       return {id:m.id,item_id:m.item_id,qty:String(m.qty),category:it?.category||"__none__"};
@@ -2615,6 +2687,10 @@ function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTe
         recurrence_type:form.recurrence_type,
         recurrence_n:form.recurrence_type==="none"?0:(parseInt(form.recurrence_n)||1),
         next_due:form.next_due, active:true, company_id:companyId,
+        // #456. Blank means no end date, which is the pre-2026-09-22
+        // behaviour: one job at a time, rolled forward from each completion.
+        // Null rather than "" so the column reads as genuinely unset.
+        recurrence_end_date: form.recurrence_type==="none" ? null : (form.recurrence_end_date.trim()||null),
       };
 
       let tplId = editId;
@@ -2640,27 +2716,43 @@ function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTe
       }
       if(newMats.length) setTemplateMaterials(p=>[...p,...newMats]);
 
-      // For a brand new template, create its first scheduled job right away
-      if(!editId){
+      // WHICH DATES NEED A JOB CARD.
+      //
+      // No end date  -> the old behaviour exactly: one card, on next_due, and
+      //                 only for a brand new template. Every template that
+      //                 exists today falls here and nothing about it moves.
+      // End date set -> every occurrence up to it (#456), minus any that
+      //                 already exist, so saving again is a no-op rather than
+      //                 a second copy of the schedule.
+      const existingForTpl = jobs.filter(j=>j.template_id===tplId);
+      const dueDates = row.recurrence_end_date
+        ? missingOccurrences({...row, id:tplId}, existingForTpl)
+        : (editId ? [] : [row.next_due]);
+
+      const madeJobs = [], madeMats = [];
+      for(const due of dueDates){
         const job = {
           id:uid(), location_id:locId, template_id:tplId, name:row.name,
           description:row.description, job_type:row.job_type,
           destination_id:row.destination_id, dest_name:row.dest_name,
-          assigned_to:row.assigned_to, due_date:row.next_due, status:"scheduled",
+          assigned_to:row.assigned_to, due_date:due, status:"scheduled",
           company_id:companyId,
         };
         await sb.insert("maint_jobs", job);
-        setJobs(p=>[...p,job]);
-        const jm=[];
+        madeJobs.push(job);
         for(const m of newMats){
           const x={id:uid(), job_id:job.id, item_id:m.item_id, qty_planned:m.qty, company_id:companyId};
           await sb.insert("maint_job_materials", x);
-          jm.push(x);
+          madeMats.push(x);
         }
-        if(jm.length) setJobMaterials(p=>[...p,...jm]);
       }
+      if(madeJobs.length) setJobs(p=>[...p,...madeJobs]);
+      if(madeMats.length) setJobMaterials(p=>[...p,...madeMats]);
 
       setShowForm(false);
+      if(row.recurrence_end_date && madeJobs.length){
+        alert(`${madeJobs.length} job card${madeJobs.length===1?"":"s"} created, ${madeJobs[0].due_date} through ${madeJobs[madeJobs.length-1].due_date}.`);
+      }
     }catch(e){ alert("Save failed: "+e.message); }
     finally{ setBusy(false); }
   };
@@ -2739,6 +2831,14 @@ function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTe
             <div className="field"><label>First / Next Due</label>
               <DateField value={form.next_due} onChange={v=>setForm(p=>({...p,next_due:v}))}/>
             </div>
+            {/* #456. Optional on purpose. Blank keeps the old behaviour —
+                one job at a time, rolled forward from each completion — so
+                every template that exists today is untouched. */}
+            {form.recurrence_type!=="none" && (
+              <div className="field"><label>Repeat Until (optional)</label>
+                <DateField value={form.recurrence_end_date} onChange={v=>setForm(p=>({...p,recurrence_end_date:v}))}/>
+              </div>
+            )}
             <div className="field"><label>Assigned To</label>
               <AssignedToField hrEmployees={hrEmployees} value={form.assigned_to} onChange={v=>setForm(p=>({...p,assigned_to:v}))}/>
             </div>
@@ -2755,6 +2855,41 @@ function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTe
               <strong style={{color:T.gold,fontSize:12}}>{recurLabel(form.recurrence_type, parseInt(form.recurrence_n)||1)}</strong>
             </div>
           )}
+
+          {/* THE COUNT, BEFORE ANYTHING IS WRITTEN. Saving with an end date
+              creates real job cards, and "47 cards" is the sort of thing
+              worth knowing in advance rather than discovering in the
+              calendar afterwards. */}
+          {form.recurrence_type!=="none" && form.recurrence_end_date && (()=>{
+            const preview = describeGeneration(
+              { next_due:form.next_due, recurrence_type:form.recurrence_type,
+                recurrence_n:parseInt(form.recurrence_n)||1,
+                recurrence_end_date:form.recurrence_end_date },
+              editId ? jobs.filter(j=>j.template_id===editId) : [],
+            );
+            return (
+              <div className="info-box" style={{display:"block"}}>
+                <div style={{fontSize:11,color:T.muted,marginBottom:3}}>Saving will create</div>
+                <strong style={{color:T.gold,fontSize:13}}>
+                  {preview.toCreate} job card{preview.toCreate===1?"":"s"}
+                </strong>
+                {preview.toCreate>0 && (
+                  <span style={{fontSize:11,color:T.muted}}> — {preview.first} through {preview.last}</span>
+                )}
+                {preview.alreadyThere>0 && (
+                  <div style={{fontSize:11,color:T.muted,marginTop:3}}>
+                    {preview.alreadyThere} of the {preview.total} already exist and are left alone.
+                  </div>
+                )}
+                {preview.cappedAt && (
+                  <div style={{fontSize:11,color:T.bad,marginTop:3}}>
+                    Capped at {preview.cappedAt}. Shorten the end date, or lengthen the interval —
+                    generating more than that is almost always a mistake in the interval.
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           <div style={{display:"flex",gap:9}}>
             <button className="btn btn-primary" onClick={save} disabled={busy}>{busy?"Saving...":(editId?"Save Changes":"Create Template")}</button>
@@ -5026,7 +5161,8 @@ function AuthenticatedApp() {
                                        templates={templates} setJobs={setJobs} setJobMaterials={setJobMaterials}
                                        setIssues={setIssues} setTemplates={setTemplates} isAdmin={isAdmin} companyId={companyId}
                                        projects={projects} workstreamStatus={workstreamStatus} progressLogs={progressLogs}
-                                       workstreams={workstreams} hrEmployees={hrEmployees}/>}
+                                       workstreams={workstreams} hrEmployees={hrEmployees}
+                                       jobInvoices={jobInvoices} vehicleTrips={vehicleTrips}/>}
           {page==="projects"     && <ProjectsPage locId={locId} projects={projects} workstreams={workstreams}
                                        workstreamStatus={workstreamStatus} progressLogs={progressLogs}
                                        progressMaterials={progressMaterials} setProgressMaterials={setProgressMaterials}
