@@ -130,50 +130,218 @@ function KPI({ label, value, sub, accent }) {
   );
 }
 
+// The Monday-to-Sunday week containing `today`. EXPORTED so tools/dashboard_test.mjs
+// can execute the real thing — an earlier version of that test re-implemented
+// this calculation inside the test file and therefore passed happily while the
+// app started its week on Sunday.
+//
+// JS getDay() returns 0 for Sunday, so a naive `d.getDate()-d.getDay()` lands
+// Sunday at the start of the FOLLOWING week. The +6 %7 shift shifts the origin
+// to Monday and is the whole reason this is a named function rather than four
+// lines inline.
+export const weekBounds = (today) => {
+  const d = new Date(today);
+  const shift = (d.getDay()+6)%7;
+  const start = new Date(d); start.setDate(d.getDate()-shift); start.setHours(0,0,0,0);
+  const end   = new Date(start); end.setDate(start.getDate()+6); end.setHours(23,59,59,999);
+  return { start, end };
+};
+
 // ─── DASHBOARD ───────────────────────────────────────────────────────────────
-function Dashboard({ items, purchases, issues, counts }) {
-  const totalValue = items.reduce((s,i)=>s+(i.open_qty||0)*(i.open_cost||0),0);
-  const issuedUnits = issues.reduce((s,i)=>s+(i.qty||0),0);
-  const calcTheo = item => {
-    const b=purchases.filter(x=>x.item_id===item.id).reduce((s,x)=>s+(x.qty||0),0);
-    const iss=issues.filter(x=>x.item_id===item.id).reduce((s,x)=>s+(x.qty||0),0);
-    return (item.open_qty||0)+b-iss;
-  };
-  const lowStock = items.filter(i=>i.min_units>0&&calcTheo(i)<=i.min_units).length;
+// ─── DASHBOARD ───────────────────────────────────────────────────────────────
+// Rebuilt 2026-09-24. Thijs: "I don't want to see the stock overview list, it's
+// too much. I want to see active projects, job cards for the week we are in.
+// And a counter of items that are out of stock/need to be ordered. Not the
+// what, just a number. And a list of items that are out of stock but needed
+// for a job that is scheduled still this week."
+//
+// The old page led with a full row of every stock item — a table that grows
+// forever and that nobody reads on arrival. The full list still exists on
+// Stock Items and Orders; this screen is now the morning glance.
+//
+// THE WEEK IS MONDAY TO SUNDAY, the week containing today. Not "the next seven
+// days": a manager opening this on Friday wants what is left of THIS week, not
+// a rolling window that quietly includes next Tuesday.
+//
+// OVERDUE JOBS ARE INCLUDED and flagged. A job that was due on Monday and is
+// still open matters more on Thursday than one due tomorrow, and a list of
+// "this week" that silently drops it would be worse than useless — it would
+// read as "nothing outstanding".
+function Dashboard({ locId, items, purchases, issues, counts, jobs, jobMaterials, projects, workstreams }) {
+  const todayD = startOfToday();
+
+  const week = useMemo(()=>weekBounds(todayD),[todayD]);
+
+  // ── Stock position, the same arithmetic the Orders page uses ──────────────
+  // Latest physical count wins over the theoretical figure where one exists —
+  // a counted shelf is evidence, a computed balance is an inference.
+  const latestCount = useMemo(()=>{
+    const m={}; counts.forEach(c=>{ if(!m[c.item_id]||c.created_at>m[c.item_id].created_at) m[c.item_id]=c; }); return m;
+  },[counts]);
+
+  const stock = useMemo(()=>{
+    const m={};
+    items.forEach(item=>{
+      const b   = purchases.filter(x=>x.item_id===item.id).reduce((s,x)=>s+(x.qty||0),0);
+      const iss = issues.filter(x=>x.item_id===item.id).reduce((s,x)=>s+(x.qty||0),0);
+      const theo = (item.open_qty||0)+b-iss;
+      const lc = latestCount[item.id];
+      const actual = lc ? lc.count_qty : theo;
+      m[item.id] = { item, actual, hasCount: !!lc,
+        outOfStock: actual<=0,
+        needsOrder: (item.min_units>0 && actual<=item.min_units) || (item.max_units>0 && actual<item.max_units && actual<=0) };
+    });
+    return m;
+  },[items,purchases,issues,latestCount]);
+
+  // ONE NUMBER, as asked. Out of stock OR at/below minimum — the two reasons
+  // something has to go on an order. Deliberately not a list: the detail lives
+  // on the Orders page and repeating it here is what made this screen heavy.
+  const toOrderCount = useMemo(()=>
+    Object.values(stock).filter(s=>s.outOfStock || (s.item.min_units>0 && s.actual<=s.item.min_units)).length
+  ,[stock]);
+
+  // ── Job cards falling in this week, plus anything still open from before ──
+  const weekJobs = useMemo(()=>{
+    const open = jobs.filter(j=>j.status==="scheduled"||j.status==="in_progress");
+    return open.map(j=>{
+      const due = parseDMY(j.due_date);
+      if(!due) return null;
+      const overdue = due < todayD;
+      if(!overdue && (due < week.start || due > week.end)) return null;
+      return { job:j, due, overdue };
+    }).filter(Boolean).sort((a,b)=>a.due-b.due);
+  },[jobs, week, todayD]);
+
+  // ── Out of stock AND needed by a job this week ────────────────────────────
+  //
+  // Narrower than the Orders page's forecast, on purpose. That one lists every
+  // SHORTFALL over two working weeks; this lists only items at zero that a job
+  // this week actually needs — the ones that will stop work, not the ones that
+  // are merely running low.
+  const blockers = useMemo(()=>{
+    const m = {};
+    weekJobs.forEach(({job, due, overdue})=>{
+      jobMaterials.filter(x=>x.job_id===job.id).forEach(mat=>{
+        const s = stock[mat.item_id];
+        if(!s || !s.outOfStock) return;
+        if(!m[mat.item_id]) m[mat.item_id] = { item:s.item, actual:s.actual, needed:0, jobs:[] };
+        m[mat.item_id].needed += mat.qty_planned||0;
+        m[mat.item_id].jobs.push({ name:job.name, date:job.due_date, overdue });
+      });
+    });
+    return Object.values(m).sort((a,b)=>a.item.description.localeCompare(b.item.description));
+  },[weekJobs, jobMaterials, stock]);
+
+  // ── Active projects, SCOPED TO THE SELECTED LODGE ─────────────────────────
+  //
+  // jobs/items/issues arrive here already filtered to locId (see allData in
+  // App), but projects and workstreams are company-wide — they join by
+  // project_id, not location_id. Without this filter a manager looking at
+  // Zebras would see Elephants' projects sitting under a week of Zebras job
+  // cards, and nothing on the row would say which lodge it belonged to.
+  const activeProjects = useMemo(()=>
+    (projects||[])
+      .filter(p=>p.status==="active" && (!locId || p.location_id===locId))
+      .map(p=>({
+        project: p,
+        streams: (workstreams||[]).filter(w=>w.project_id===p.id).length,
+      }))
+  ,[projects, workstreams, locId]);
+
+  const wk = `${fmtDMY(week.start)} – ${fmtDMY(week.end)}`;
+
   return (<>
     <div className="kpi-row">
-      <KPI label="Stock Items"      value={items.length}       sub="Active items"          accent={T.gold}/>
-      <KPI label="Opening Value"    value={fmtR(totalValue)}   sub="At weighted avg cost"  accent={T.ok}/>
-      <KPI label="Units Issued"     value={fmtN(issuedUnits)}  sub="This month"            accent={T.muted}/>
-      <KPI label="Low Stock Alerts" value={lowStock}            sub="At or below minimum"   accent={lowStock>0?T.danger:T.ok}/>
+      <KPI label="Active Projects" value={activeProjects.length} sub="In progress" accent={T.gold}/>
+      <KPI label="Jobs This Week"  value={weekJobs.length}
+           sub={weekJobs.filter(j=>j.overdue).length>0
+                 ? `${weekJobs.filter(j=>j.overdue).length} overdue`
+                 : wk}
+           accent={weekJobs.some(j=>j.overdue)?T.danger:T.ok}/>
+      <KPI label="Items to Order"  value={toOrderCount}
+           sub="Out of stock or at minimum" accent={toOrderCount>0?T.warn:T.ok}/>
+      <KPI label="Blocking Jobs"   value={blockers.length}
+           sub="Out of stock, needed this week" accent={blockers.length>0?T.danger:T.ok}/>
     </div>
+
+    {/* Blockers first: it is the only thing here that stops work today. */}
     <div className="section">
-      <div className="section-title">Stock Overview</div>
-      <div className="tbl-wrap"><table className="tbl">
-        <thead><tr><th>Code</th><th>Description</th><th>Location</th>
-          <th className="num">Open Qty</th><th className="num">Purchased</th>
-          <th className="num">Issued</th><th className="num">Theoretical</th><th>Status</th></tr></thead>
-        <tbody>
-          {items.map(item=>{
-            const bought=purchases.filter(x=>x.item_id===item.id).reduce((s,x)=>s+(x.qty||0),0);
-            const issued=issues.filter(x=>x.item_id===item.id).reduce((s,x)=>s+(x.qty||0),0);
-            const theo=calcTheo(item);
-            const low=item.min_units>0&&theo<=item.min_units;
-            const veryLow=item.min_units>0&&theo<item.min_units;
-            return (<tr key={item.id}>
-              <td className="mono" style={{fontSize:11,color:T.muted}}>{item.item_code||"—"}</td>
-              <td style={{fontWeight:600}}>{item.description}</td>
-              <td style={{fontSize:11,color:T.muted}}>{[item.storeroom,item.shelf,item.position].filter(Boolean).join(" / ")}</td>
-              <td className="num">{fmtN(item.open_qty)} <span style={{fontSize:10,color:T.muted}}>{item.unit}</span></td>
-              <td className="num" style={{color:bought>0?T.ok:T.muted}}>{bought>0?`+${fmtN(bought)}`:"—"}</td>
-              <td className="num" style={{color:issued>0?T.warn:T.muted}}>{issued>0?`-${fmtN(issued)}`:"—"}</td>
-              <td className="num" style={{fontWeight:700,color:veryLow?T.danger:low?T.warn:T.cream}}>{fmtN(theo)}</td>
-              <td>{veryLow?<span className="badge badge-bad">Low</span>:low?<span className="badge badge-warn">Min</span>:<span className="badge badge-ok">OK</span>}</td>
-            </tr>);
-          })}
-          {items.length===0&&<tr><td colSpan={8} className="empty">No items in this location yet</td></tr>}
-        </tbody>
-      </table></div>
+      <div className="section-title">Out of Stock — Needed This Week</div>
+      {blockers.length===0 ? (
+        <div className="empty" style={{padding:"18px 26px"}}>
+          Nothing scheduled this week is waiting on an out-of-stock item.
+        </div>
+      ) : (
+        <div className="tbl-wrap"><table className="tbl">
+          <thead><tr><th>Item</th><th className="num">Needed</th><th>Waiting Jobs</th></tr></thead>
+          <tbody>
+            {blockers.map(b=>(
+              <tr key={b.item.id}>
+                <td>
+                  <div style={{fontWeight:600}}>{b.item.description}</div>
+                  <div style={{fontSize:10,color:T.muted,fontFamily:"'Inter',sans-serif"}}>{b.item.item_code||""}</div>
+                </td>
+                <td className="num"><span className="reorder-qty">{fmtN(b.needed)} {b.item.unit}</span></td>
+                <td style={{fontSize:12}}>
+                  {b.jobs.map((j,i)=>(
+                    <div key={i} style={{color:j.overdue?T.danger:T.cream}}>
+                      {j.name} <span style={{color:T.muted}}>· {j.date}{j.overdue?" (overdue)":""}</span>
+                    </div>
+                  ))}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table></div>
+      )}
+    </div>
+
+    <div className="section">
+      <div className="section-title">Job Cards — {wk}</div>
+      {weekJobs.length===0 ? (
+        <div className="empty" style={{padding:"18px 26px"}}>No open job cards due this week.</div>
+      ) : (
+        <div className="tbl-wrap"><table className="tbl">
+          <thead><tr><th>Due</th><th>Job</th><th>Type</th><th>Assigned</th><th>Status</th></tr></thead>
+          <tbody>
+            {weekJobs.map(({job,overdue})=>(
+              <tr key={job.id}>
+                <td className="mono" style={{fontSize:12,color:overdue?T.danger:T.cream,whiteSpace:"nowrap"}}>{job.due_date}</td>
+                <td style={{fontWeight:600}}>{job.name}</td>
+                <td style={{fontSize:11,color:T.muted}}>{JOB_TYPES.find(t=>t.id===job.job_type)?.label||job.job_type||"—"}</td>
+                <td style={{fontSize:11,color:T.muted}}>{job.assigned_to||"—"}</td>
+                <td>{overdue
+                  ? <span className="badge badge-bad">Overdue</span>
+                  : job.status==="in_progress"
+                    ? <span className="badge badge-warn">In progress</span>
+                    : <span className="badge badge-ok">Scheduled</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table></div>
+      )}
+    </div>
+
+    <div className="section">
+      <div className="section-title">Active Projects</div>
+      {activeProjects.length===0 ? (
+        <div className="empty" style={{padding:"18px 26px"}}>
+          No active projects at {LOCATIONS.find(l=>l.id===locId)?.name||locId}.
+        </div>
+      ) : (
+        <div className="tbl-wrap"><table className="tbl">
+          <thead><tr><th>Project</th><th className="num">Workstreams</th></tr></thead>
+          <tbody>
+            {activeProjects.map(({project,streams})=>(
+              <tr key={project.id}>
+                <td style={{fontWeight:600}}>{project.name}</td>
+                <td className="num">{streams}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table></div>
+      )}
     </div>
   </>);
 }
@@ -5161,7 +5329,8 @@ function AuthenticatedApp() {
         </div>
 
         <div className="section">
-          {page==="dashboard"    && <Dashboard items={items} purchases={purchases} issues={issues} counts={counts}/>}
+          {page==="dashboard"    && <Dashboard locId={locId} items={items} purchases={purchases} issues={issues} counts={counts}
+                                       jobs={jobs} jobMaterials={jobMaterials} projects={projects} workstreams={workstreams}/>}
           {page==="purchases"    && <Purchases locId={locId} items={items} purchases={purchases} setPurchases={setPurchases} isAdmin={isAdmin} companyId={companyId} slips={slips} onSlipAttached={onSlipAttached} creditNotes={creditNotes} setCreditNotes={setCreditNotes} setIssues={setIssues}/>}
           {page==="issues"       && <Issues locId={locId} items={items} issues={issues} setIssues={setIssues}
                                        destinations={destinations} purchases={purchases} jobs={jobs} isAdmin={isAdmin} companyId={companyId}/>}
