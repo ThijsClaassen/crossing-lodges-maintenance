@@ -302,7 +302,7 @@ export const css = `
   .tab:hover:not(.active){color:${T.cream}}
   .field{margin-bottom:12px}
   .field label{display:block;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:${T.muted};font-weight:600;margin-bottom:4px}
-  .field input,.field select,.field textarea{width:100%;background:rgba(0,0,0,.25);border:1px solid ${T.border};border-radius:6px;padding:10px 11px;color:${T.cream};font-family:'Inter',sans-serif;font-size:16px;outline:none;transition:border .15s}
+  .field input,.field select,.field textarea{width:100%;background:var(--surface);border:1px solid ${T.border};border-radius:6px;padding:10px 11px;color:${T.cream};font-family:'Inter',sans-serif;font-size:16px;outline:none;transition:border .15s}
   .field input:focus,.field select:focus,.field textarea:focus{border-color:${T.gold}}
   .field select option{background:${T.panel}}
   .field textarea{resize:vertical;font-size:14px}
