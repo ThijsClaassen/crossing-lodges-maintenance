@@ -5253,9 +5253,9 @@ function AuthenticatedApp() {
           ))}
         </div>
         <nav className="nav">
-          {sections.map(sec=>(
+          {sections.map((sec,si)=>(
             <div key={sec}>
-              <div className="nav-section">{sec}</div>
+              <div className={`nav-section${si===0?" first":""}`}>{sec}</div>
               {visiblePages.filter(p=>p.section===sec).map(p=>(
                 <button key={p.id} className={`nav-item${page===p.id?" active":""}`} onClick={()=>setPage(p.id)}>{p.label}</button>
               ))}
@@ -5389,9 +5389,9 @@ function AuthenticatedApp() {
               <span className="nav-sheet-title">Menu</span>
               <button className="nav-sheet-close" onClick={()=>setMenuOpen(false)}>Close</button>
             </div>
-            {sections.map(sec=>(
+            {sections.map((sec,si)=>(
               <div key={sec}>
-                <div className="nav-section">{sec}</div>
+                <div className={`nav-section${si===0?" first":""}`}>{sec}</div>
                 {visiblePages.filter(p=>p.section===sec).map(p=>(
                   <button key={p.id} className={`nav-sheet-item${page===p.id?" active":""}`}
                     onClick={()=>{setPage(p.id);setMenuOpen(false);}}>

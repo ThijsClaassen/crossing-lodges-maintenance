@@ -268,7 +268,12 @@ export const css = `
   .loc-btn.active-SC{background:rgba(107,140,110,.15);border-color:rgba(107,140,110,.45);color:#7BAE7F}
   .loc-dot{display:inline-block;width:7px;height:7px;border-radius:50%;flex-shrink:0}
   .nav{flex:1;padding:6px 0;overflow-y:auto}
-  .nav-section{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:${T.muted};padding:10px 16px 3px;font-weight:600;opacity:.7}
+  .nav-section{font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--sidebar-text);padding:16px 12px 7px;font-weight:700;opacity:1;margin-top:10px;border-top:1px solid var(--sidebar-line)}
+  /* The first header sits directly under the logo/lodge picker, which
+     already has its own divider — a second hairline there reads as a
+     double rule. Flagged from the JSX rather than :first-child because
+     the desktop rail and the mobile sheet nest these differently. */
+  .nav-section.first{margin-top:0;border-top:none;padding-top:4px}
   .nav-item{display:flex;align-items:center;padding:8px 16px;cursor:pointer;font-size:13px;font-weight:500;color:${T.muted};transition:all .15s;border:none;background:none;width:100%;text-align:left}
   .nav-item:hover{color:${T.cream};background:rgba(184,147,90,.06)}
   .nav-item.active{color:${T.gold};background:rgba(184,147,90,.12);border-right:2px solid ${T.gold};font-weight:600}
@@ -389,7 +394,13 @@ export const css = `
      minimum, and .nav-section then multiplied it down again with opacity:.7.
      Thijs, Demo environment: "can barely read anything in the menu beam."
      The rail has its own tuned palette; these use it. */
-  .nav-section{color:var(--sidebar-muted);opacity:1}
+  /* HEADERS ARE NOT ITEMS (2026-09-24). The 2026-09-22 contrast pass set this
+     to --sidebar-muted, the very colour it also gave .nav-item — so the two
+     became indistinguishable except for size, and Thijs: "the headers are now
+     almost the same font and color as the other items." Headers take the
+     bright rail text; items stay muted; the active item is the accent. Three
+     tiers, three colours. */
+  .nav-section{color:var(--sidebar-text);opacity:1}
   .loc-label{color:var(--sidebar-muted)}
   .loc-btn{color:var(--sidebar-muted)}
   .loc-btn:hover{color:var(--sidebar-text);background:rgba(255,255,255,.06)}
