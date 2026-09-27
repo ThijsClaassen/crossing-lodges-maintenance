@@ -33,8 +33,36 @@ export async function logMemberPurchase({ companyId, memberId, locationId, charg
       charge_date: chargeDate,
       description: description.trim(),
       amount: Number(amount),
+      kind: 'disbursement',
+      source_app: 'maintenance',
     },
   ])
+  if (error) throw error
+}
+
+// Slip lines billed STRAIGHT to a named member (#496, 2026-09-27) — no
+// pending queue. One member_charges row per (line, member) part, carrying
+// the quantity, the per-unit price and the slip photo, so the member's
+// invoice reads "6 x Castle Lite (Makro, 27 Sep)" and the charge traces back
+// to the slip it came from. VAT-inclusive, like every member purchase.
+export async function chargeMembersFromSlip({ companyId, locationId, slipId, chargeDate, supplier, parts }) {
+  if (!parts.length) return
+  const { data: { user } } = await supabase.auth.getUser()
+  const payload = parts.map((p) => ({
+    company_id: companyId,
+    member_id: p.member_id,
+    location_id: locationId || null,
+    charge_date: chargeDate,
+    description: `${p.qty}${p.lineQty && p.qty !== p.lineQty ? ` of ${p.lineQty}` : ''} × ${p.description}${supplier ? ` (${supplier})` : ''}`,
+    amount: Number(p.amount),
+    kind: 'disbursement',
+    source_app: 'maintenance',
+    qty: p.qty,
+    unit_rate: p.unit_rate,
+    slip_id: slipId || null,
+    created_by: user?.id || null,
+  }))
+  const { error } = await supabase.from('member_charges').insert(payload)
   if (error) throw error
 }
 
@@ -90,6 +118,10 @@ export async function billPendingCharges({ companyId, memberId, locationId, pend
     charge_date: p.charge_date,
     description: p.description,
     amount: p.amount,
+    kind: 'disbursement',
+    source_app: p.source_app || 'maintenance',
+    qty: p.qty ?? null,
+    slip_id: p.slip_id || null,
   }))
   if (charges.length) {
     const { error: insertErr } = await supabase.from('member_charges').insert(charges)

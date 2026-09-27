@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "react";
 import { sb, LOCATIONS, LOC_COLORS } from "./sb.js";
 import { subscribe as subscribeOffline, listRejected, retryRejected, discardEntry, syncNow } from "./offline.js";
 import { supabase } from "./supabaseClient.js";
@@ -11,7 +11,8 @@ import SetPassword from "./SetPassword.jsx";
 import { CompanyProvider, useCompany } from "./CompanyContext.jsx";
 import { uploadPurchaseSlip, getSlipUrl } from "./slipUpload.js";
 import { availableMaintenanceStaff, normalizeDepartment } from "./maintenanceStaffEngine.js";
-import { listMembers as listBillingMembers, logMemberPurchase, listPendingCharges, addPendingCharges, billPendingCharges, deletePendingCharge } from "./memberPurchase.js";
+import { listMembers as listBillingMembers, logMemberPurchase, listPendingCharges, addPendingCharges, billPendingCharges, deletePendingCharge, chargeMembersFromSlip } from "./memberPurchase.js";
+import { wholeLine, validateSplits, planWrites, proRata } from "./splitLines.js";
 import { jobCostBreakdown, invoiceTotalDisagrees } from "./jobCosting.js";
 import { missingOccurrences, nextDueOnCompletion, nextDueFromOpenJobs, describeGeneration } from "./recurrence.js";
 
@@ -720,6 +721,10 @@ function SearchableSelect({ value, onChange, options, placeholder = "Select…",
 // convenience so nobody has to retype what's already printed on the slip.
 function MaintSlipScanCard({ items, locId, companyId, onSaved, memberBillingEnabled, onMemberPending }) {
   const [scanning,setScanning]=useState(false);
+  // Members for the per-line "Bill to" picker (#496). Loaded once the card
+  // mounts, only when the company bills members at all.
+  const [members,setMembers]=useState([]);
+  useEffect(()=>{ if(memberBillingEnabled) listBillingMembers({companyId}).then(setMembers).catch(()=>setMembers([])); },[companyId,memberBillingEnabled]);
   const [scanError,setScanError]=useState("");
   const [review,setReview]=useState(null);
   const [saving,setSaving]=useState(false);
@@ -742,7 +747,7 @@ function MaintSlipScanCard({ items, locId, companyId, onSaved, memberBillingEnab
       const rowsRaw=(data.line_items||[]).map((li,idx)=>{
         const m=findBestItemMatch(li.raw_text, items);
         const rawTotal = li.total_price ?? ((li.unit_price&&li.qty) ? li.unit_price*li.qty : 0);
-        return { key: idx, raw_text: li.raw_text, item_id: m.confident?m.match.id:"", confident:m.confident, guessName:m.match?.description||"", qty: li.qty??1, raw_total:rawTotal, total_cost:rawTotal, skip:false, billToMember:false };
+        return { key: idx, raw_text: li.raw_text, item_id: m.confident?m.match.id:"", confident:m.confident, guessName:m.match?.description||"", qty: li.qty??1, raw_total:rawTotal, total_cost:rawTotal, skip:false, billToMember:false, splits: wholeLine("lodge", li.qty??1), splitOpen:false };
       });
       setReview({
         date: fromISO(data.date_guess || new Date().toISOString().slice(0,10)),
@@ -756,15 +761,39 @@ function MaintSlipScanCard({ items, locId, companyId, onSaved, memberBillingEnab
     finally{ setScanning(false); }
   };
 
-  const updateRow=(key,patch)=>setReview(r=>({...r, rows:r.rows.map(row=>row.key===key?{...row,...patch}:row)}));
+  const updateRow=(key,patch)=>setReview(r=>({...r, rows:r.rows.map(row=>{
+    if(row.key!==key) return row;
+    const next={...row,...patch};
+    // A single-destination line follows its quantity; a real split is the
+    // user's own numbers and is left alone (the check will flag a mismatch).
+    if("qty" in patch && next.splits && next.splits.length===1) next.splits=[{...next.splits[0], qty:Number(patch.qty)||0}];
+    return next;
+  })}));
+  const setDestination=(key,who)=>setReview(r=>({...r, rows:r.rows.map(row=>{
+    if(row.key!==key) return row;
+    if(who==="__split__") return {...row, splitOpen:true, splits: row.splits.length>1 ? row.splits : [{who:row.splits[0]?.who||"lodge", qty:Number(row.qty)||0},{who:"", qty:0}]};
+    return {...row, splitOpen:false, splits: wholeLine(who, row.qty), billToMember: who!=="lodge"};
+  })}));
+  const updateSplit=(key,i,patch)=>setReview(r=>({...r, rows:r.rows.map(row=>row.key!==key?row:{...row, splits: row.splits.map((x,j)=>j===i?{...x,...patch}:x)})}));
+  const addSplit=key=>setReview(r=>({...r, rows:r.rows.map(row=>row.key!==key?row:{...row, splits:[...row.splits,{who:"",qty:0}]})}));
+  const removeSplit=(key,i)=>setReview(r=>({...r, rows:r.rows.map(row=>row.key!==key?row:{...row, splits: row.splits.filter((_,j)=>j!==i)})}));
+  const problems = review ? validateSplits(review.rows) : [];
   const setPricesIncludeVat=val=>setReview(r=>({...r, pricesIncludeVat:val, rows:applyVatToRows(r.rows,val,r.vatRate)}));
   const setVatRate=val=>setReview(r=>({...r, vatRate:val, rows:applyVatToRows(r.rows,r.pricesIncludeVat,val)}));
   const cancelReview=()=>{ setReview(null); setScanError(""); setSaveStatus(""); };
 
   const approve=async()=>{
-    const toSave=review.rows.filter(r=>!r.skip && !r.billToMember && r.item_id && Number(r.qty)>0);
-    const toMember=review.rows.filter(r=>!r.skip && r.billToMember);
-    if(toSave.length===0 && toMember.length===0){ setSaveStatus("Nothing to save — pick an item (or tick Bill to Member) for at least one line, or cancel."); return; }
+    // Every line is planned through splitLines.js: lodge parts -> this app's
+    // stock, named-member parts -> that member's account at once (#496),
+    // unnamed-member parts -> the pending queue. Quantities and money are
+    // checked first; a slip with a problem is not half-saved.
+    const probs = validateSplits(review.rows);
+    if(probs.length){ setSaveStatus(`Fix before saving: ${probs.map(p=>`${p.line} — ${p.message}`).join("; ")}`); return; }
+    const plan = planWrites(review.rows, {
+      lodgeAmount: r=>Number(r.total_cost)||0,
+      memberAmount: r=>vatInclusiveAmount(r, review.pricesIncludeVat, review.vatRate),
+    });
+    if(plan.lodge.length===0 && plan.members.length===0 && plan.pending.length===0){ setSaveStatus("Nothing to save — pick an item or a member for at least one line, or cancel."); return; }
     setSaving(true); setSaveStatus("");
     try{
       const slip = await uploadPurchaseSlip({
@@ -772,30 +801,30 @@ function MaintSlipScanCard({ items, locId, companyId, onSaved, memberBillingEnab
         supplierGuess: review.supplier, dateGuess: toISO(review.date), slipTotalGuess: review.slipTotal,
       });
       const saved=[];
-      for(const r of toSave){
+      for(const r of plan.lodge){
         const row={id:uid(), location_id:locId, item_id:r.item_id, date:review.date,
-          qty:Number(r.qty), total_cost:Number(r.total_cost)||0,
-          supplier:review.supplier||null, notes:null, company_id:companyId, slip_id:slip.id};
+          qty:r.qty, total_cost:r.total_cost,
+          supplier:review.supplier||null, notes: r.qty!==r.lineQty ? `${r.qty} of ${r.lineQty} on the slip; rest billed to members` : null,
+          company_id:companyId, slip_id:slip.id};
         await sb.insert("maint_purchases", row);
         saved.push(row);
       }
-      if(toMember.length){
+      if(plan.members.length){
+        await chargeMembersFromSlip({ companyId, locationId: locId, slipId: slip.id, chargeDate: toISO(review.date), supplier: review.supplier, parts: plan.members });
+      }
+      if(plan.pending.length){
         await addPendingCharges({
           companyId, locationId: locId, slipId: slip.id,
-          rows: toMember.map(r=>({
-            chargeDate: toISO(review.date),
-            description: r.guessName||r.raw_text,
-            qty: Number(r.qty)||null,
-            amount: vatInclusiveAmount(r, review.pricesIncludeVat, review.vatRate),
-          })),
+          rows: plan.pending.map(r=>({ chargeDate: toISO(review.date), description: r.description, qty: r.qty||null, amount: r.amount })),
         });
         onMemberPending?.();
       }
       onSaved(saved, slip);
       const parts=[];
-      if(saved.length) parts.push(`${saved.length} purchase${saved.length===1?"":"s"}`);
-      if(toMember.length) parts.push(`${toMember.length} line${toMember.length===1?"":"s"} sent to Member Purchase`);
-      setSaveStatus(`Saved ${parts.join(" and ")} and attached the slip photo.`);
+      if(saved.length) parts.push(`${saved.length} purchase${saved.length===1?"":"s"} to stock`);
+      if(plan.members.length) parts.push(`${plan.members.length} line${plan.members.length===1?"":"s"} billed to member accounts`);
+      if(plan.pending.length) parts.push(`${plan.pending.length} line${plan.pending.length===1?"":"s"} waiting for a member name`);
+      setSaveStatus(`Saved ${parts.join(", ")} and attached the slip photo.`);
       setReview(null);
     }catch(err){ setSaveStatus(`Could not save: ${err.message}`); }
     finally{ setSaving(false); }
@@ -826,14 +855,14 @@ function MaintSlipScanCard({ items, locId, companyId, onSaved, memberBillingEnab
           </div>
           <div style={{fontSize:12,color:T.muted,margin:"8px 0"}}>
             {review.rows.length} line{review.rows.length===1?"":"s"} read from the slip. Green = matched automatically — check it's right. Amber = pick the item, or tick Skip to leave it out.
-            {memberBillingEnabled && <> A line bought on a member's behalf can be ticked <strong>Bill to Member</strong> instead — it skips this app's stock and lands in the Member Purchase list to be billed to whoever it's for, at the full VAT-inclusive amount as printed on the slip.</>}
+            {memberBillingEnabled && <> Under <strong>Bill to</strong>, a line bought for a member goes straight to that member's account at the VAT-inclusive slip price; <strong>Split…</strong> shares one line by quantity between the lodge and members (12 beers: 6 and 6). Nothing saves while a split does not add up.</>}
             {review.slipTotal!=null && <> Slip total printed: <strong style={{color:T.cream}}>{fmtR(review.slipTotal)}</strong>.</>}
           </div>
           <div className="tbl-wrap"><table className="tbl">
-            <thead><tr><th>Slip text</th><th>Item</th><th className="num">Qty</th><th className="num">Total cost</th><th>Skip</th>{memberBillingEnabled && <th>Bill to Member</th>}</tr></thead>
+            <thead><tr><th>Slip text</th><th>Item</th><th className="num">Qty</th><th className="num">Total cost</th><th>Skip</th>{memberBillingEnabled && <th>Bill to</th>}</tr></thead>
             <tbody>
-              {review.rows.map(r=>(
-                <tr key={r.key} style={{background:r.skip?"rgba(0,0,0,.15)":r.billToMember?"rgba(184,147,90,.10)":r.confident?"rgba(90,155,106,.06)":"rgba(184,147,90,.08)"}}>
+              {review.rows.map(r=>(<Fragment key={r.key}>
+                <tr style={{background:r.skip?"rgba(0,0,0,.15)":r.billToMember?"rgba(184,147,90,.10)":r.confident?"rgba(90,155,106,.06)":"rgba(184,147,90,.08)"}}>
                   <td style={{fontSize:12,color:T.muted,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.raw_text}</td>
                   <td>
                     <SearchableSelect
@@ -847,14 +876,56 @@ function MaintSlipScanCard({ items, locId, companyId, onSaved, memberBillingEnab
                   <td className="num"><input type="number" inputMode="decimal" style={{width:70}} value={r.qty} onChange={e=>updateRow(r.key,{qty:e.target.value})}/></td>
                   <td className="num"><input type="number" inputMode="decimal" step="0.01" style={{width:90}} value={r.total_cost} onChange={e=>updateRow(r.key,{total_cost:e.target.value})}/></td>
                   <td><input type="checkbox" checked={r.skip} onChange={e=>updateRow(r.key,{skip:e.target.checked})}/></td>
-                  {memberBillingEnabled && <td><input type="checkbox" checked={r.billToMember} onChange={e=>updateRow(r.key,{billToMember:e.target.checked, skip:e.target.checked?false:r.skip})}/></td>}
+                  {memberBillingEnabled && <td>
+                    <select value={r.splits.length>1?"__split__":(r.splits[0]?.who||"lodge")} onChange={e=>setDestination(r.key,e.target.value)} style={{minWidth:150}}>
+                      <option value="lodge">Lodge stock</option>
+                      {members.map(m=><option key={m.id} value={m.id}>Member: {m.name}</option>)}
+                      <option value="pending">Member — name later</option>
+                      <option value="__split__">Split…</option>
+                    </select>
+                  </td>}
                 </tr>
-              ))}
+                {memberBillingEnabled && r.splits.length>1 && !r.skip && (()=>{
+                  const memberTotal = vatInclusiveAmount(r, review.pricesIncludeVat, review.vatRate);
+                  const amounts = proRata(memberTotal, r.splits.map(x=>x.qty));
+                  const sumQty = r.splits.reduce((s,x)=>s+(Number(x.qty)||0),0);
+                  const bad = Math.abs(sumQty-(Number(r.qty)||0))>0.0001;
+                  return (
+                  <tr>
+                    <td colSpan={6} style={{background:"rgba(184,147,90,.06)",padding:"6px 10px"}}>
+                      <div style={{fontSize:12,color:T.muted,marginBottom:4}}>Split {r.qty} × {r.guessName||r.raw_text} — {fmtR(memberTotal)} incl. VAT, shared by quantity</div>
+                      {r.splits.map((x,i)=>(
+                        <div key={i} style={{display:"flex",gap:8,alignItems:"center",marginBottom:4}}>
+                          <select value={x.who} onChange={e=>updateSplit(r.key,i,{who:e.target.value})} style={{minWidth:150}}>
+                            <option value="">— who —</option>
+                            <option value="lodge">Lodge stock</option>
+                            {members.map(m=><option key={m.id} value={m.id}>Member: {m.name}</option>)}
+                            <option value="pending">Member — name later</option>
+                          </select>
+                          <input type="number" inputMode="decimal" style={{width:70}} value={x.qty} onChange={e=>updateSplit(r.key,i,{qty:e.target.value})}/>
+                          <span style={{fontSize:12,color:T.muted,minWidth:80}}>{x.who==="lodge"?"":fmtR(amounts[i]||0)}</span>
+                          <button type="button" className="btn btn-ghost btn-sm" onClick={()=>removeSplit(r.key,i)}>Remove</button>
+                        </div>
+                      ))}
+                      <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={()=>addSplit(r.key)}>+ Add part</button>
+                        <span style={{fontSize:12,color:bad?T.danger:T.ok}}>{bad?`Parts add up to ${sumQty}, the line says ${r.qty}`:`Adds up: ${sumQty} of ${r.qty}`}</span>
+                      </div>
+                    </td>
+                  </tr>);
+                })()}
+              </Fragment>))}
             </tbody>
           </table></div>
-          {saveStatus && <div style={{fontSize:12,color:saveStatus.startsWith("Could not")?T.danger:T.ok,marginTop:8}}>{saveStatus}</div>}
+          {problems.length>0 && (
+            <div style={{fontSize:12,color:T.danger,marginTop:8}}>
+              Check before saving:
+              <ul style={{margin:"4px 0 0 18px"}}>{problems.map((p,i)=><li key={i}>{p.line} — {p.message}</li>)}</ul>
+            </div>
+          )}
+          {saveStatus && <div style={{fontSize:12,color:saveStatus.startsWith("Could not")||saveStatus.startsWith("Fix")?T.danger:T.ok,marginTop:8}}>{saveStatus}</div>}
           <div style={{display:"flex",gap:9,marginTop:12}}>
-            <button className="btn btn-primary" onClick={approve} disabled={saving}>{saving?"Saving…":"Approve & save"}</button>
+            <button className="btn btn-primary" onClick={approve} disabled={saving||problems.length>0}>{saving?"Saving…":"Approve & save"}</button>
             <button className="btn btn-ghost" onClick={cancelReview} disabled={saving}>Cancel</button>
           </div>
         </div>
