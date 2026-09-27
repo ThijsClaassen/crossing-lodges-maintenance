@@ -51,6 +51,15 @@ async function resizeImageFile(file, maxDim=1800, quality=0.85) {
   canvas.getContext("2d").drawImage(bitmap,0,0,w,h);
   return new Promise(resolve=>canvas.toBlob(blob=>resolve(blob),"image/jpeg",quality));
 }
+
+// Deep links from the Finance Dashboard (#489, 2026-09-27): ?page=<tab id>
+// opens that tab, ?loc=<lodge id> picks that lodge. Read once at mount; an
+// unknown id falls back to the default so a stale link never breaks the app.
+function urlParam(name) {
+  if (typeof window === 'undefined') return null
+  return new URLSearchParams(window.location.search).get(name)
+}
+
 function blobToBase64(blob) {
   return new Promise((resolve,reject)=>{
     const reader=new FileReader();
@@ -5046,8 +5055,8 @@ function AuthenticatedApp() {
     switchCompany,
   } = useCompany();
 
-  const [page,          setPage]         = useState("dashboard");
-  const [locId,         setLocId]        = useState("ZC");
+  const [page,          setPage]         = useState(() => urlParam('page') || "dashboard");
+  const [locId,         setLocId]        = useState(() => urlParam("loc") || "ZC");
   // 'ZC' is only a first guess: this state initialises before the lodge list
   // has loaded (CompanyContext fetches it), and another company won't have a
   // lodge called ZC at all. Once LOCATIONS is populated — and again whenever
@@ -5113,6 +5122,14 @@ function AuthenticatedApp() {
   const [loading,       setLoading]      = useState(true);
   const [loadErr,       setLoadErr]      = useState(null);
   const isAdmin = role==="admin";
+  // A deep link (?page=) to a page this user cannot see, or a typo, lands on
+  // the first visible page instead of a blank screen (#489). Lives up here,
+  // above the loading/error early returns, so the hook order never changes.
+  useEffect(()=>{
+    const visible = PAGES.filter(p=>isAdmin||!p.adminOnly);
+    if(visible.length && !visible.some(p=>p.id===page)) setPage(visible[0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, isAdmin]);
 
   useEffect(()=>{if(role&&!isAdmin&&page==="dashboard")setPage("purchases");},[role,isAdmin,page]);
 
