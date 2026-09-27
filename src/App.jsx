@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "react";
-import { prepareSlipImages } from "./slipTiles.js";
+import { prepareSlipImages, readSlipParts } from "./slipTiles.js";
 import { sb, LOCATIONS, LOC_COLORS } from "./sb.js";
 import { subscribe as subscribeOffline, listRejected, retryRejected, discardEntry, syncNow } from "./offline.js";
 import { supabase } from "./supabaseClient.js";
@@ -749,13 +749,8 @@ function MaintSlipScanCard({ items, locId, companyId, onSaved, memberBillingEnab
     try{
       // #500: a long till slip goes as overlapping tiles so the print stays readable (src/slipTiles.js).
       const { images, storeBlob: resized } = await prepareSlipImages(file);
-      // Each step names itself in its error so a phone failure says where it happened.
-      const res=await fetch("/api/parse-slip",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({images})})
-        .catch((e)=>{ throw new Error(`Sending the photo to the reader: ${e.message}`); });
-      const text=await res.text().catch((e)=>{ throw new Error(`Reading the reply: ${e.message}`); });
-      let data;
-      try{ data=JSON.parse(text); }catch{ throw new Error(`The reader answered with something unexpected (${res.status}): ${text.slice(0,120)}`); }
-      if(!res.ok) throw new Error(data.error||"Could not read that slip.");
+      // One short request per tile, in parallel, stitched in slipTiles.js.
+      const data=await readSlipParts(images);
       if(data.truncated) setScanError(`This slip is very long — ${(data.line_items||[]).length} lines were read, but the last few may be missing. Check the bottom of the slip against the list below.`);
       const pricesIncludeVat = typeof data.amounts_include_vat_guess==="boolean" ? data.amounts_include_vat_guess : true;
       const vatRate = data.vat_rate_guess ?? 15;
