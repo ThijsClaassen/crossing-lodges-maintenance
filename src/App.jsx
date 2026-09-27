@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "react";
+import { prepareSlipImages } from "./slipTiles.js";
 import { sb, LOCATIONS, LOC_COLORS } from "./sb.js";
 import { subscribe as subscribeOffline, listRejected, retryRejected, discardEntry, syncNow } from "./offline.js";
 import { supabase } from "./supabaseClient.js";
@@ -746,11 +747,12 @@ function MaintSlipScanCard({ items, locId, companyId, onSaved, memberBillingEnab
     if(!file)return;
     setScanError(""); setSaveStatus(""); setScanning(true);
     try{
-      const resized=await resizeImageFile(file);
-      const base64=await blobToBase64(resized);
-      const res=await fetch("/api/parse-slip",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({image_base64:base64,media_type:"image/jpeg"})});
+      // #500: a long till slip goes as overlapping tiles so the print stays readable (src/slipTiles.js).
+      const { images, storeBlob: resized } = await prepareSlipImages(file);
+      const res=await fetch("/api/parse-slip",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({images})});
       const data=await res.json();
       if(!res.ok) throw new Error(data.error||"Could not read that slip.");
+      if(data.truncated) setScanError(`This slip is very long — ${(data.line_items||[]).length} lines were read, but the last few may be missing. Check the bottom of the slip against the list below.`);
       const pricesIncludeVat = typeof data.amounts_include_vat_guess==="boolean" ? data.amounts_include_vat_guess : true;
       const vatRate = data.vat_rate_guess ?? 15;
       const rowsRaw=(data.line_items||[]).map((li,idx)=>{
