@@ -110,7 +110,9 @@ const callsTo = (name) => {
   )
   check(
     'an open job with a trip still shows its cost',
-    /cost\.completed \|\| cost\.vehicle > 0/.test(APP),
+    // 2026-09-27 (#510): the job card became a drawer with a Cost tab that is
+    // always there, so an open job's vehicle trips are visible without any gate.
+    /\{id:"cost",\s*label:"Cost"\}/.test(APP) && /cost\.completed \? "Total" : "Total so far"/.test(APP),
     'gating on completion alone would hide money already spent on an open job',
   )
   check('the disagreement warning is rendered', /invoiceTotalDisagrees\(cost\)/.test(APP))

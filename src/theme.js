@@ -430,4 +430,27 @@ export const css = `
 
   /* Cards lift off the page instead of being outlined on it. */
   .card,.panel{background:var(--surface-raised);border:1px solid var(--card-border);border-radius:var(--radius-md);box-shadow:var(--shadow-md)}
+
+  /* Drawer — the detail pattern (readability pass 2026-09-27), same classes as Ops/HR */
+  .drawer-scrim{position:fixed;inset:0;background:rgba(22,32,46,.35);z-index:200}
+  .drawer{position:fixed;top:0;right:0;bottom:0;width:640px;max-width:100%;background:${T.panel};box-shadow:var(--shadow-lg);z-index:201;display:flex;flex-direction:column;animation:drawer-in .18s ease-out}
+  @keyframes drawer-in{from{transform:translateX(24px);opacity:0}to{transform:none;opacity:1}}
+  .drawer-head{padding:18px 24px 0;border-bottom:1px solid ${T.border}}
+  .drawer-title{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+  .drawer-title h2{margin:0;font-size:18px;font-weight:600;color:${T.cream};font-family:'Inter',sans-serif}
+  .drawer-meta{color:${T.muted};font-size:12.5px;margin-top:3px}
+  .drawer-x{background:none;border:none;font-size:22px;color:${T.muted};cursor:pointer;line-height:1;padding:0 2px}
+  .drawer-tabs{display:flex;gap:2px;margin-top:14px;overflow-x:auto}
+  .drawer-tabs button{background:none;border:none;border-bottom:2px solid transparent;padding:10px 12px;font:500 13px 'Inter',sans-serif;color:${T.muted};cursor:pointer;margin-bottom:-1px;white-space:nowrap}
+  .drawer-tabs button.active{color:${T.gold};border-bottom-color:${T.gold};font-weight:600}
+  .drawer-tabs button .n{margin-left:5px;font-size:11px;color:${T.muted};background:var(--surface-overlay);border-radius:999px;padding:1px 6px}
+  .drawer-body{flex:1;overflow:auto;padding:20px 24px}
+  .drawer-foot{padding:14px 24px;border-top:1px solid ${T.border};display:flex;gap:10px;align-items:center;background:${T.panel}}
+  .drawer-foot .hint{margin-left:auto;color:${T.muted};font-size:12px}
+  .drawer-sect{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:${T.gold};font-weight:700;margin:18px 0 10px}
+  .drawer-sect:first-child{margin-top:0}
+  .drawer-note{background:var(--accent-wash);border-radius:8px;padding:10px 12px;font-size:12.5px;color:${T.cream};line-height:1.5}
+  .field .help{font-size:11.5px;color:${T.muted};margin-top:5px;line-height:1.45}
+  .field.full{grid-column:1/-1}
+  @media (max-width:768px){.drawer{width:100%}.drawer-body{padding:16px}.drawer-head{padding:14px 16px 0}.drawer-foot{padding:12px 16px;flex-wrap:wrap}}
 `;

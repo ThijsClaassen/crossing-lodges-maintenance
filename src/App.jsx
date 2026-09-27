@@ -2117,13 +2117,59 @@ function Calendar({ locId, jobs, jobMaterials, items, purchases, issues, destina
 }
 
 // ─── JOB DETAIL ──────────────────────────────────────────────────────────────
+// ─── DRAWER (shared) ─────────────────────────────────────────────────────────
+// The detail pattern from the readability pass (2026-09-27): title + meta,
+// tabs, a scrolling body and a fixed footer, sliding in from the right. Same
+// classes and behaviour as the Ops vehicle drawer and the HR employee drawer.
+function Drawer({ title, meta, tabs, tab, onTab, onClose, footer, children }) {
+  useEffect(()=>{
+    const onKey = e => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return ()=>window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <>
+      <div className="drawer-scrim" onClick={onClose}/>
+      <aside className="drawer" role="dialog" aria-label={title}>
+        <div className="drawer-head">
+          <div className="drawer-title">
+            <div><h2>{title}</h2>{meta && <div className="drawer-meta">{meta}</div>}</div>
+            <button className="drawer-x" onClick={onClose} title="Close (Esc)">×</button>
+          </div>
+          {tabs && (
+            <div className="drawer-tabs">
+              {tabs.map(t=>(
+                <button key={t.id} className={tab===t.id?"active":""} onClick={()=>onTab(t.id)}>
+                  {t.label}{t.count!=null && <span className="n">{t.count}</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="drawer-body">{children}</div>
+        {footer && <div className="drawer-foot">{footer}</div>}
+      </aside>
+    </>
+  );
+}
+
+// ─── JOB CARD (drawer) ───────────────────────────────────────────────────────
+// One drawer replaces the view pop-up and the two pop-ups that used to stack
+// on it (Edit, Complete). Tabs: Details (editable in place for admins while
+// the job is open) · Materials (status + the planned list) · Cost · Complete.
+// The edit state that lived in EditJob is hoisted here so Details and
+// Materials can share one Save; completion keeps its own component
+// (CompleteJob, embedded) because that flow is long and self-contained.
+const JOB_STATUS_LABEL = { scheduled:"Open", in_progress:"In progress", completed:"Completed", cancelled:"Cancelled" };
+
 function JobDetail({ job, onClose, locId, jobs, jobMaterials, items, purchases, issues,
                      templates, destinations, setJobs, setJobMaterials, setIssues, setTemplates, isAdmin, companyId, hrEmployees,
                      jobInvoices, vehicleTrips }) {
-  const [completing, setCompleting] = useState(false);
-  const [editing, setEditing] = useState(false);
+  const [tab, setTab] = useState("details");
   const mats = jobMaterials.filter(m=>m.job_id===job.id);
   const isOpen = job.status==="scheduled"||job.status==="in_progress";
+  const canEdit = isOpen && isAdmin;
+  const locDests = destinations.filter(d=>d.location_id===job.location_id).sort((a,b)=>a.sort_order-b.sort_order);
 
   // #455. Both sources are company-wide lists already in memory; filtering
   // here rather than querying keeps the card instant and works offline.
@@ -2131,6 +2177,54 @@ function JobDetail({ job, onClose, locId, jobs, jobMaterials, items, purchases, 
     invoice: (jobInvoices||[]).find(i=>i.job_id===job.id) || null,
     trips:   (vehicleTrips||[]).filter(t=>t.job_id===job.id),
   }), [jobInvoices, vehicleTrips, job.id]);
+
+  // Details + planned materials (was EditJob). Saved together by "Save details".
+  const [form,setForm] = useState({
+    name:job.name, description:job.description||"", job_type:job.job_type||"preventive",
+    destination_id:job.destination_id||"", assigned_to:job.assigned_to||"", due_date:job.due_date,
+  });
+  const [rows,setRows] = useState(()=>mats.map(m=>{
+    const it = items.find(x=>x.id===m.item_id);
+    return {id:m.id, item_id:m.item_id, qty:String(m.qty_planned), category:it?.category||"__none__"};
+  }));
+  const [busy,setBusy] = useState(false);
+  const [completeBusy,setCompleteBusy] = useState(false);
+  const completeRef = useRef(null);
+  const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
+  const dirty = canEdit && (
+    form.name!==job.name || (form.description||"")!==(job.description||"") || form.job_type!==(job.job_type||"preventive") ||
+    (form.destination_id||"")!==(job.destination_id||"") || (form.assigned_to||"")!==(job.assigned_to||"") || form.due_date!==job.due_date ||
+    rows.length!==mats.length || rows.some((r,i)=>r.item_id!==mats[i]?.item_id || parseFloat(r.qty)!==+(mats[i]?.qty_planned||0))
+  );
+
+  const saveDetails = async () => {
+    if(!form.name.trim()) return;
+    setBusy(true);
+    try{
+      const dest = locDests.find(d=>d.id===form.destination_id);
+      const patch = {
+        name:form.name.trim(), description:form.description||null, job_type:form.job_type,
+        destination_id:form.destination_id||null, dest_name:dest?.name||null,
+        assigned_to:form.assigned_to||null, due_date:form.due_date,
+      };
+      await sb.update("maint_jobs", job.id, patch);
+      setJobs(p=>p.map(j=>j.id===job.id?{...j,...patch}:j));
+
+      // Replace the material list wholesale rather than trying to diff it --
+      // simplest and matches how templates handle their own material edits.
+      for(const m of mats) await sb.delete("maint_job_materials", m.id);
+      const newMats=[];
+      for(const r of rows){
+        if(!r.item_id||!(parseFloat(r.qty)>0)) continue;
+        const m={id:uid(), job_id:job.id, item_id:r.item_id, qty_planned:parseFloat(r.qty), company_id: companyId};
+        await sb.insert("maint_job_materials", m);
+        newMats.push(m);
+      }
+      setJobMaterials(p=>[...p.filter(m=>m.job_id!==job.id), ...newMats]);
+      setRows(newMats.map(m=>{ const it=items.find(x=>x.id===m.item_id); return {id:m.id,item_id:m.item_id,qty:String(m.qty_planned),category:it?.category||"__none__"}; }));
+    }catch(e){ alert("Save failed: "+e.message); }
+    finally{ setBusy(false); }
+  };
 
   const cancel = async () => {
     if(!window.confirm("Cancel this job?")) return;
@@ -2151,136 +2245,183 @@ function JobDetail({ job, onClose, locId, jobs, jobMaterials, items, purchases, 
     }catch(e){ alert("Error: "+e.message); }
   };
 
-  if(completing) return (
-    <CompleteJob job={job} mats={mats} items={items} purchases={purchases} issues={issues}
-      locId={locId} templates={templates} hrEmployees={hrEmployees} jobs={jobs}
-      setJobs={setJobs} setJobMaterials={setJobMaterials} setIssues={setIssues} setTemplates={setTemplates}
-      onDone={()=>{setCompleting(false);onClose();}} onBack={()=>setCompleting(false)} companyId={companyId}/>
+  const tabs = [
+    {id:"details",   label:"Details"},
+    {id:"materials", label:"Materials", count: mats.length},
+    {id:"cost",      label:"Cost"},
+    ...(isOpen ? [{id:"complete", label:"Complete"}] : []),
+  ];
+  const statusTone = job.status==="completed" ? "badge-ok" : job.status==="cancelled" ? "badge-neu" : "badge-warn";
+  const meta = (
+    <>
+      {JOB_TYPES.find(t=>t.id===job.job_type)?.label||job.job_type} · due {job.due_date}
+      {job.dest_name ? ` · ${job.dest_name}` : ""}{job.assigned_to ? ` · ${job.assigned_to}` : ""}
+      &nbsp;<span className={`badge ${statusTone}`}>{JOB_STATUS_LABEL[job.status]||job.status}</span>
+      {job.vehicle_id && <> <span className="badge badge-neu">Vehicle service</span></>}
+    </>
   );
 
-  if(editing) return (
-    <EditJob job={job} mats={mats} items={items} destinations={destinations}
-      setJobs={setJobs} setJobMaterials={setJobMaterials} hrEmployees={hrEmployees}
-      onDone={()=>{setEditing(false);onClose();}} onBack={()=>setEditing(false)} companyId={companyId}/>
+  const footer = tab==="complete" ? (
+    <>
+      <button className="btn btn-primary" disabled={completeBusy} onClick={()=>completeRef.current?.save()}>
+        {completeBusy?"Saving...":"Complete job"}
+      </button>
+      <button className="btn btn-ghost" disabled={completeBusy} onClick={()=>setTab("details")}>Back</button>
+      <span className="hint">Issues the stock, logs the hours, raises the internal invoice</span>
+    </>
+  ) : (
+    <>
+      {canEdit && <button className="btn btn-primary" onClick={saveDetails} disabled={busy||!dirty}>{busy?"Saving...":"Save details"}</button>}
+      {isOpen && <button className={`btn ${canEdit?"btn-ghost":"btn-primary"}`} onClick={()=>setTab("complete")}>Complete job →</button>}
+      {isOpen && isAdmin && <button className="btn btn-ghost" onClick={cancel}>Cancel job</button>}
+      {isAdmin && <button className="btn btn-danger" onClick={remove}>Delete</button>}
+      <span className="hint">{dirty ? "Unsaved changes" : "Esc closes"}</span>
+    </>
   );
 
   return (
-    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div className="modal">
-        <div className="modal-title">
-          {job.name}
-          {job.vehicle_id && <span className="badge badge-neu" style={{marginLeft:9,verticalAlign:"middle"}}>Vehicle Service</span>}
-        </div>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 16px",marginBottom:14}}>
-          {[["Due date",job.due_date],
-            ["Type",JOB_TYPES.find(t=>t.id===job.job_type)?.label||job.job_type],
-            ["Where",job.dest_name||"—"],
-            ["Assigned to",job.assigned_to||"—"]].map(([l,v])=>(
-            <div key={l} style={{padding:"7px 0",borderBottom:`1px solid ${T.border}`}}>
-              <div style={{fontSize:9,letterSpacing:".12em",textTransform:"uppercase",color:T.muted,fontWeight:600,marginBottom:2}}>{l}</div>
-              <div style={{fontSize:13,fontWeight:600,color:T.cream}}>{v}</div>
+    <Drawer title={job.name} meta={meta} tabs={tabs} tab={tab} onTab={setTab} onClose={onClose} footer={footer}>
+      {tab==="details" && (canEdit ? (
+        <>
+          {job.template_id && (
+            <div className="drawer-note" style={{marginBottom:14}}>
+              This job came from a recurring template. Changes here affect only this occurrence —
+              the template itself is unchanged, and future occurrences will still follow it.
             </div>
-          ))}
-        </div>
-
-        {job.description && (
-          <div style={{background:"rgba(0,0,0,.25)",border:`1px solid ${T.border}`,borderRadius:7,padding:"11px 13px",marginBottom:14}}>
-            <div style={{fontSize:9,letterSpacing:".1em",textTransform:"uppercase",color:T.muted,fontWeight:600,marginBottom:5}}>Description</div>
-            <div style={{fontSize:13,color:T.cream,lineHeight:1.6,whiteSpace:"pre-wrap"}}>{job.description}</div>
+          )}
+          <div className="grid2">
+            <div className="field full"><label>Job name</label><input type="text" value={form.name} onChange={f("name")}/></div>
+            <div className="field"><label>Due date</label><DateField value={form.due_date} onChange={v=>setForm(p=>({...p,due_date:v}))}/></div>
+            <div className="field"><label>Job type</label>
+              <select value={form.job_type} onChange={f("job_type")}>{JOB_TYPES.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}</select>
+            </div>
+            <div className="field"><label>Where</label>
+              <select value={form.destination_id} onChange={f("destination_id")}>
+                <option value="">-- Select --</option>
+                {locDests.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            </div>
+            <div className="field"><label>Assigned to</label>
+              <AssignedToField hrEmployees={hrEmployees} value={form.assigned_to} onChange={v=>setForm(p=>({...p,assigned_to:v}))}/>
+            </div>
+            <div className="field full"><label>Description</label><textarea rows={3} value={form.description} onChange={f("description")}/></div>
           </div>
-        )}
-
-        {/* WHAT THIS JOB COST (#455, 2026-09-22). Labour and materials come
-            from the invoice written at completion; the vehicle is summed live
-            from vehicle_trips, because a trip is very often logged after the
-            job is closed and a frozen figure would miss it forever. Shown
-            whenever there is anything to show — an open job with a trip
-            against it has a real cost already. */}
-        {(cost.completed || cost.vehicle > 0) && (
-          <div style={{background:"rgba(0,0,0,.25)",border:`1px solid ${T.border}`,borderRadius:7,padding:"11px 13px",marginBottom:14}}>
-            <div style={{fontSize:9,letterSpacing:".1em",textTransform:"uppercase",color:T.muted,fontWeight:600,marginBottom:7}}>
-              What this job cost
-            </div>
-            {[["Labour",cost.labour],
-              ["Materials",cost.materials],
-              [cost.tripCount ? `Vehicle (${cost.tripCount} trip${cost.tripCount===1?"":"s"}, ${fmtN(cost.vehicleKm)} km)` : "Vehicle", cost.vehicle]].map(([l,v])=>(
-              <div key={l} style={{display:"flex",justifyContent:"space-between",fontSize:12,color:T.cream,padding:"3px 0"}}>
-                <span style={{color:T.muted}}>{l}</span><span>{fmtR(v)}</span>
+        </>
+      ) : (
+        <>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 16px",marginBottom:14}}>
+            {[["Due date",job.due_date],
+              ["Type",JOB_TYPES.find(t=>t.id===job.job_type)?.label||job.job_type],
+              ["Where",job.dest_name||"—"],
+              ["Assigned to",job.assigned_to||"—"]].map(([l,v])=>(
+              <div key={l} style={{padding:"7px 0",borderBottom:`1px solid ${T.border}`}}>
+                <div style={{fontSize:9,letterSpacing:".12em",textTransform:"uppercase",color:T.muted,fontWeight:600,marginBottom:2}}>{l}</div>
+                <div style={{fontSize:13,fontWeight:600,color:T.cream}}>{v}</div>
               </div>
             ))}
-            <div style={{display:"flex",justifyContent:"space-between",fontSize:13,fontWeight:700,color:T.gold,
-                         borderTop:`1px solid ${T.border}`,marginTop:6,paddingTop:6}}>
-              <span>Total</span><span>{fmtR(cost.total)}</span>
+          </div>
+          {job.description && (
+            <>
+              <div className="drawer-sect">Description</div>
+              <div style={{fontSize:13,color:T.cream,lineHeight:1.6,whiteSpace:"pre-wrap"}}>{job.description}</div>
+            </>
+          )}
+          {job.status==="completed" && (
+            <>
+              <div className="drawer-sect">Completed</div>
+              <div className="info-box"><span style={{fontSize:11,color:T.muted}}>Completed on</span><strong style={{color:T.ok}}>{job.completed_date}</strong></div>
+              {job.completion_notes && <div style={{fontSize:12,color:T.muted}}><strong style={{color:T.cream}}>Notes:</strong> {job.completion_notes}</div>}
+            </>
+          )}
+        </>
+      ))}
+
+      {tab==="materials" && (
+        <>
+          <div className="drawer-sect">Planned for this job</div>
+          {mats.length===0 ? (
+            <div style={{fontSize:12,color:T.muted,marginBottom:14}}>No materials planned for this job.</div>
+          ) : (
+            <div className="tbl-wrap" style={{marginBottom:14}}><table className="tbl" style={{minWidth:0}}>
+              <thead><tr><th>Item</th><th className="num">Needed</th><th className="num">In stock</th><th>Status</th></tr></thead>
+              <tbody>
+                {mats.map(m=>{
+                  const item = items.find(i=>i.id===m.item_id);
+                  if(!item) return null;
+                  const avail = availableStock(item, purchases, issues);
+                  const short = (m.qty_planned||0) - avail;
+                  return (
+                    <tr key={m.id}>
+                      <td style={{fontWeight:600}}>{item.description}{job.status==="completed" && m.qty_used!=null && <span style={{fontSize:10,color:T.muted}}> · used {fmtN(m.qty_used)}</span>}</td>
+                      <td className="num">{fmtN(m.qty_planned)} <span style={{fontSize:10,color:T.muted}}>{item.unit}</span></td>
+                      <td className="num" style={{color:T.muted}}>{fmtN(avail)}</td>
+                      <td>{short>0
+                        ? <span className="badge badge-bad">Short {fmtN(short)}</span>
+                        : <span className="badge badge-ok">Available</span>}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table></div>
+          )}
+          {canEdit && (
+            <>
+              <div className="drawer-sect">Change the planned list</div>
+              <MaterialPicker items={items} rows={rows} setRows={setRows}/>
+              <div style={{fontSize:11,color:T.muted}}>Saved with "Save details" below. Materials actually used are recorded when the job is completed.</div>
+            </>
+          )}
+        </>
+      )}
+
+      {tab==="cost" && (
+        <>
+          <div className="drawer-sect">What this job cost</div>
+          {[["Labour",cost.labour],
+            ["Materials",cost.materials],
+            [cost.tripCount ? `Vehicle (${cost.tripCount} trip${cost.tripCount===1?"":"s"}, ${fmtN(cost.vehicleKm)} km)` : "Vehicle", cost.vehicle]].map(([l,v])=>(
+            <div key={l} style={{display:"flex",justifyContent:"space-between",fontSize:13,color:T.cream,padding:"6px 0",borderBottom:`1px solid ${T.border}`}}>
+              <span style={{color:T.muted}}>{l}</span><span>{fmtR(v)}</span>
             </div>
-            {!cost.completed && (
-              <div style={{fontSize:11,color:T.muted,marginTop:7,lineHeight:1.5}}>
-                This job isn&rsquo;t completed yet, so there is no labour or material cost against it —
-                the vehicle trips are already real.
-              </div>
-            )}
-            {invoiceTotalDisagrees(cost) && (
-              <div style={{fontSize:11,color:T.bad,marginTop:7,lineHeight:1.5}}>
-                The stored invoice total ({fmtR(cost.invoiceTotal)}) doesn&rsquo;t match labour plus
-                materials. Worth a look — this figure is built from the parts, not from that total.
-              </div>
-            )}
+          ))}
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:14,fontWeight:700,color:T.gold,padding:"8px 0"}}>
+            <span>{cost.completed ? "Total" : "Total so far"}</span><span>{fmtR(cost.total)}</span>
           </div>
-        )}
-
-        <div className="section-title">Materials Required</div>
-        {mats.length===0 ? (
-          <div style={{fontSize:12,color:T.muted,marginBottom:14}}>No materials planned for this job.</div>
-        ) : (
-          <div className="tbl-wrap" style={{marginBottom:14}}><table className="tbl" style={{minWidth:0}}>
-            <thead><tr><th>Item</th><th className="num">Needed</th><th className="num">In Stock</th><th>Status</th></tr></thead>
-            <tbody>
-              {mats.map(m=>{
-                const item = items.find(i=>i.id===m.item_id);
-                if(!item) return null;
-                const avail = availableStock(item, purchases, issues);
-                const short = (m.qty_planned||0) - avail;
-                return (
-                  <tr key={m.id}>
-                    <td style={{fontWeight:600}}>{item.description}</td>
-                    <td className="num">{fmtN(m.qty_planned)} <span style={{fontSize:10,color:T.muted}}>{item.unit}</span></td>
-                    <td className="num" style={{color:T.muted}}>{fmtN(avail)}</td>
-                    <td>{short>0
-                      ? <span className="badge badge-bad">Short {fmtN(short)}</span>
-                      : <span className="badge badge-ok">Available</span>}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table></div>
-        )}
-
-        {job.status==="completed" && (
-          <div className="info-box" style={{background:"rgba(90,155,114,.1)",border:`1px solid rgba(90,155,114,.3)`}}>
-            <span style={{fontSize:11,color:T.muted}}>Completed</span>
-            <strong style={{color:T.ok,fontFamily:"'Inter',sans-serif"}}>{job.completed_date}</strong>
+          {!cost.completed && (
+            <div style={{fontSize:12,color:T.muted,lineHeight:1.5}}>
+              Labour and materials are written when the job is completed. Vehicle trips are summed live from the Ops vehicle log, so this can grow after completion too.
+            </div>
+          )}
+          {invoiceTotalDisagrees(cost) && (
+            <div style={{fontSize:12,color:T.danger,marginTop:8,lineHeight:1.5}}>
+              The stored invoice total ({fmtR(cost.invoiceTotal)}) doesn&rsquo;t match labour plus
+              materials. Worth a look — this figure is built from the parts, not from that total.
+            </div>
+          )}
+          <div className="drawer-sect">Billed to</div>
+          <div style={{fontSize:13}}>
+            {cost.completed
+              ? <>Internal invoice raised on completion{job.dest_name ? ` for ${job.dest_name}` : ""} — see Internal Billing.</>
+              : <>Internal invoice not yet raised — it is created when the job is completed.</>}
           </div>
-        )}
-        {job.completion_notes && (
-          <div style={{fontSize:12,color:T.muted,marginBottom:12}}>
-            <strong style={{color:T.cream}}>Notes:</strong> {job.completion_notes}
-          </div>
-        )}
+        </>
+      )}
 
-        <div style={{display:"flex",gap:9,flexWrap:"wrap"}}>
-          {isOpen && <button className="btn btn-primary" onClick={()=>setCompleting(true)}>Complete Job</button>}
-          {isOpen && isAdmin && <button className="btn btn-ghost" onClick={()=>setEditing(true)}>Edit</button>}
-          {isOpen && isAdmin && <button className="btn btn-ghost" onClick={cancel}>Cancel Job</button>}
-          {isAdmin && <button className="btn btn-danger" onClick={remove}>Delete</button>}
-          <button className="btn btn-ghost" onClick={onClose}>Close</button>
-        </div>
-      </div>
-    </div>
+      {tab==="complete" && isOpen && (
+        <CompleteJob embedded actionsRef={completeRef} onBusyChange={setCompleteBusy}
+          job={job} mats={mats} items={items} purchases={purchases} issues={issues}
+          locId={locId} templates={templates} hrEmployees={hrEmployees} jobs={jobs}
+          setJobs={setJobs} setJobMaterials={setJobMaterials} setIssues={setIssues} setTemplates={setTemplates}
+          onDone={onClose} onBack={()=>setTab("details")} companyId={companyId}/>
+      )}
+    </Drawer>
   );
 }
 
 // ─── COMPLETE JOB ────────────────────────────────────────────────────────────
 function CompleteJob({ job, mats, items, purchases, issues, locId, templates, hrEmployees, jobs,
-                       setJobs, setJobMaterials, setIssues, setTemplates, onDone, onBack, companyId }) {
+                       setJobs, setJobMaterials, setIssues, setTemplates, onDone, onBack, companyId,
+                       embedded = false, actionsRef = null, onBusyChange = null }) {
   const [date, setDate]   = useState(today());
   const [notes, setNotes] = useState("");
   const [used, setUsed]   = useState(()=>{
@@ -2456,10 +2597,13 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates, hr
   const willRepeat = tpl && tpl.recurrence_type!=="none" && tpl.recurrence_n>0;
   const nextPreview = willRepeat && date ? fmtDMY(addPeriod(parseDMY(date), tpl.recurrence_type, tpl.recurrence_n)) : null;
 
-  return (
-    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onBack()}>
-      <div className="modal">
-        <div className="modal-title">Complete <span>{job.name}</span></div>
+  // Embedded in the job drawer: the drawer's footer owns the buttons, so it
+  // reaches save() through actionsRef and mirrors busy through onBusyChange.
+  if (actionsRef) actionsRef.current = { save };
+  useEffect(()=>{ if (onBusyChange) onBusyChange(busy); }, [busy, onBusyChange]);
+
+  const content = (
+    <>
 
         {job.vehicle_id && (
           <div style={{background:"rgba(184,147,90,.06)",border:`1px solid rgba(184,147,90,.2)`,borderRadius:7,padding:"11px 13px",marginBottom:14}}>
@@ -2572,12 +2716,22 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates, hr
           </div>
         )}
 
-        <div style={{display:"flex",gap:9}}>
-          <button className="btn btn-primary" onClick={save} disabled={busy}>
-            {busy?"Saving...":"Confirm Complete"}
-          </button>
-          <button className="btn btn-ghost" onClick={onBack} disabled={busy}>Back</button>
-        </div>
+        {!embedded && (
+          <div style={{display:"flex",gap:9}}>
+            <button className="btn btn-primary" onClick={save} disabled={busy}>
+              {busy?"Saving...":"Confirm Complete"}
+            </button>
+            <button className="btn btn-ghost" onClick={onBack} disabled={busy}>Back</button>
+          </div>
+        )}
+    </>
+  );
+  if (embedded) return content;
+  return (
+    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onBack()}>
+      <div className="modal">
+        <div className="modal-title">Complete <span>{job.name}</span></div>
+        {content}
       </div>
     </div>
   );
@@ -2655,99 +2809,6 @@ function AdHocJob({ locId, items, destinations, setJobs, setJobMaterials, onClos
         <div style={{display:"flex",gap:9,marginTop:4}}>
           <button className="btn btn-primary" onClick={save} disabled={busy}>{busy?"Saving...":"Save Job"}</button>
           <button className="btn btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── EDIT JOB (Admin) ─────────────────────────────────────────────────────────
-// Edits an existing scheduled job instance -- its own date/details/materials,
-// not the recurring template it may have come from. Only available while the
-// job is still scheduled/in_progress; completed jobs are historical record.
-function EditJob({ job, mats, items, destinations, setJobs, setJobMaterials, onDone, onBack, companyId, hrEmployees }) {
-  const locDests = destinations.filter(d=>d.location_id===job.location_id).sort((a,b)=>a.sort_order-b.sort_order);
-  const [form,setForm] = useState({
-    name:job.name, description:job.description||"", job_type:job.job_type||"preventive",
-    destination_id:job.destination_id||"", assigned_to:job.assigned_to||"", due_date:job.due_date,
-  });
-  const [rows,setRows] = useState(()=>mats.map(m=>{
-    const it = items.find(x=>x.id===m.item_id);
-    return {id:m.id, item_id:m.item_id, qty:String(m.qty_planned), category:it?.category||"__none__"};
-  }));
-  const [busy,setBusy] = useState(false);
-  const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
-
-  const save = async () => {
-    if(!form.name.trim()) return;
-    setBusy(true);
-    try{
-      const dest = locDests.find(d=>d.id===form.destination_id);
-      const patch = {
-        name:form.name.trim(), description:form.description||null, job_type:form.job_type,
-        destination_id:form.destination_id||null, dest_name:dest?.name||null,
-        assigned_to:form.assigned_to||null, due_date:form.due_date,
-      };
-      await sb.update("maint_jobs", job.id, patch);
-      setJobs(p=>p.map(j=>j.id===job.id?{...j,...patch}:j));
-
-      // Replace the material list wholesale rather than trying to diff it --
-      // simplest and matches how templates handle their own material edits.
-      for(const m of mats) await sb.delete("maint_job_materials", m.id);
-      const newMats=[];
-      for(const r of rows){
-        if(!r.item_id||!(parseFloat(r.qty)>0)) continue;
-        const m={id:uid(), job_id:job.id, item_id:r.item_id, qty_planned:parseFloat(r.qty), company_id: companyId};
-        await sb.insert("maint_job_materials", m);
-        newMats.push(m);
-      }
-      setJobMaterials(p=>[...p.filter(m=>m.job_id!==job.id), ...newMats]);
-      onDone();
-    }catch(e){ alert("Save failed: "+e.message); }
-    finally{ setBusy(false); }
-  };
-
-  return (
-    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onBack()}>
-      <div className="modal">
-        <div className="modal-title">Edit <span>{job.name}</span></div>
-        {job.template_id && (
-          <div style={{fontSize:11,color:T.muted,marginBottom:14,lineHeight:1.5}}>
-            This job came from a recurring template. Changes here affect only this occurrence --
-            the template itself is unchanged, and future occurrences will still follow it.
-          </div>
-        )}
-        <div className="field"><label>Job Name</label>
-          <input type="text" value={form.name} onChange={f("name")}/>
-        </div>
-        <div className="grid2">
-          <div className="field"><label>Due Date</label>
-            <DateField value={form.due_date} onChange={v=>setForm(p=>({...p,due_date:v}))}/>
-          </div>
-          <div className="field"><label>Job Type</label>
-            <select value={form.job_type} onChange={f("job_type")}>
-              {JOB_TYPES.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}
-            </select>
-          </div>
-          <div className="field"><label>Where</label>
-            <select value={form.destination_id} onChange={f("destination_id")}>
-              <option value="">-- Select --</option>
-              {locDests.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}
-            </select>
-          </div>
-          <div className="field"><label>Assigned To</label>
-            <AssignedToField hrEmployees={hrEmployees} value={form.assigned_to} onChange={v=>setForm(p=>({...p,assigned_to:v}))}/>
-          </div>
-        </div>
-        <div className="field"><label>Description</label>
-          <textarea rows={2} value={form.description} onChange={f("description")}/>
-        </div>
-
-        <MaterialPicker items={items} rows={rows} setRows={setRows}/>
-
-        <div style={{display:"flex",gap:9,marginTop:4}}>
-          <button className="btn btn-primary" onClick={save} disabled={busy}>{busy?"Saving...":"Save Changes"}</button>
-          <button className="btn btn-ghost" onClick={onBack} disabled={busy}>Cancel</button>
         </div>
       </div>
     </div>
