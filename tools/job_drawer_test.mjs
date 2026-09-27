@@ -57,5 +57,15 @@ const retIdx = cj.indexOf('if (embedded) return content;')
 const lastHook = Math.max(cj.lastIndexOf('useState('), cj.lastIndexOf('useEffect('), cj.lastIndexOf('useMemo('))
 check('no hook after the embedded early return', lastHook < retIdx)
 
+// Round 4 (2026-09-27): ad-hoc job and job templates on the same pattern.
+const ah = fn('AdHocJob')
+check('ad-hoc job is a ONE-screen drawer (no tabs)', /<Drawer title="Log a job"/.test(ah) && !/tabs=\{/.test(ah))
+check('ad-hoc job keeps the material picker and saves job + materials', /<MaterialPicker items=\{items\} rows=\{rows\} setRows=\{setRows\}\/>/.test(ah) && /sb\.insert\("maint_jobs", job\)/.test(ah) && /sb\.insert\("maint_job_materials", m\)/.test(ah))
+const jt = fn('JobTemplates')
+check('job template form is a drawer with Job · Schedule · Materials', /\{id:"job",label:"Job"\},\{id:"schedule",label:"Schedule"\},\{id:"materials",label:"Materials"/.test(jt))
+check('template rows open the drawer', /className="row-open" onClick=\{\(\)=>openEdit\(t\)\}/.test(jt))
+check('the generation preview (#456) survives on the Schedule tab', /describeGeneration\(/.test(jt) && /Saving will create/.test(jt))
+check('delete moved into the drawer footer', />Delete<\/button>/.test(jt) && !/btn-danger btn-sm" onClick=\{\(\)=>remove\(t\)\}>x/.test(jt))
+
 console.log(failed ? `\n${failed} check(s) failed` : '\nall job drawer checks pass')
 process.exit(failed ? 1 : 0)

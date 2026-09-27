@@ -2774,44 +2774,43 @@ function AdHocJob({ locId, items, destinations, setJobs, setJobMaterials, onClos
     finally{ setBusy(false); }
   };
 
+  // One screen, no tabs — staff log a job the way they log a trip (readability
+  // pass 2026-09-27; Thijs: data entry must never span several screens).
   return (
-    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div className="modal">
-        <div className="modal-title">Log <span>Job</span></div>
-        <div className="field"><label>Job Name</label>
-          <input type="text" value={form.name} onChange={f("name")} placeholder="e.g. Replace geyser element Room 2"/>
+    <Drawer title="Log a job" meta="An ad-hoc job card for this lodge — everything on one screen" onClose={onClose}
+      footer={<>
+        <button className="btn btn-primary" onClick={save} disabled={busy||!form.name.trim()}>{busy?"Saving...":"Save job"}</button>
+        <button className="btn btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
+        <span className="hint">Materials are optional — they show on the job card as planned</span>
+      </>}>
+      <div className="drawer-grid">
+        <div className="field full"><label>Job name</label>
+          <input type="text" value={form.name} onChange={f("name")} placeholder="e.g. Replace geyser element Room 2" autoFocus/>
         </div>
-        <div className="grid2">
-          <div className="field"><label>Due Date</label>
-            <DateField value={form.due_date} onChange={v=>setForm(p=>({...p,due_date:v}))}/>
-          </div>
-          <div className="field"><label>Job Type</label>
-            <select value={form.job_type} onChange={f("job_type")}>
-              {JOB_TYPES.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}
-            </select>
-          </div>
-          <div className="field"><label>Where</label>
-            <select value={form.destination_id} onChange={f("destination_id")}>
-              <option value="">-- Select --</option>
-              {locDests.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}
-            </select>
-          </div>
-          <div className="field"><label>Assigned To</label>
-            <AssignedToField hrEmployees={hrEmployees} value={form.assigned_to} onChange={v=>setForm(p=>({...p,assigned_to:v}))}/>
-          </div>
+        <div className="field"><label>Due date</label>
+          <DateField value={form.due_date} onChange={v=>setForm(p=>({...p,due_date:v}))}/>
         </div>
-        <div className="field"><label>Description</label>
-          <textarea rows={2} value={form.description} onChange={f("description")}/>
+        <div className="field"><label>Job type</label>
+          <select value={form.job_type} onChange={f("job_type")}>
+            {JOB_TYPES.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}
+          </select>
         </div>
-
-        <MaterialPicker items={items} rows={rows} setRows={setRows}/>
-
-        <div style={{display:"flex",gap:9,marginTop:4}}>
-          <button className="btn btn-primary" onClick={save} disabled={busy}>{busy?"Saving...":"Save Job"}</button>
-          <button className="btn btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
+        <div className="field"><label>Where</label>
+          <select value={form.destination_id} onChange={f("destination_id")}>
+            <option value="">-- Select --</option>
+            {locDests.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+        </div>
+        <div className="field"><label>Assigned to</label>
+          <AssignedToField hrEmployees={hrEmployees} value={form.assigned_to} onChange={v=>setForm(p=>({...p,assigned_to:v}))}/>
+        </div>
+        <div className="field full"><label>Description</label>
+          <textarea rows={3} value={form.description} onChange={f("description")}/>
         </div>
       </div>
-    </div>
+      <div className="drawer-sect">Materials needed</div>
+      <MaterialPicker items={items} rows={rows} setRows={setRows}/>
+    </Drawer>
   );
 }
 
@@ -2970,10 +2969,12 @@ function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTe
   const [form,setForm] = useState(blank);
   const [rows,setRows] = useState([]);
   const [busy,setBusy] = useState(false);
+  const [tab,setTab]   = useState("job");   // drawer tab: job | schedule | materials
   const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
 
-  const openAdd = ()=>{ setForm({...blank,next_due:today()}); setRows([]); setEditId(null); setShowForm(true); };
+  const openAdd = ()=>{ setForm({...blank,next_due:today()}); setRows([]); setEditId(null); setTab("job"); setShowForm(true); };
   const openEdit = t => {
+    setTab("job");
     setForm({name:t.name,description:t.description||"",job_type:t.job_type||"preventive",
              destination_id:t.destination_id||"",assigned_to:t.assigned_to||"",
              recurrence_type:t.recurrence_type||"none",recurrence_n:String(t.recurrence_n||0),
@@ -3092,7 +3093,7 @@ function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTe
       <thead><tr><th>Job Name</th><th>Type</th><th>Where</th><th>Assigned</th><th>Repeats</th><th>Next Due</th><th className="num">Materials</th><th></th></tr></thead>
       <tbody>
         {templates.map(t=>(
-          <tr key={t.id}>
+          <tr key={t.id} className="row-open" onClick={()=>openEdit(t)}>
             <td style={{fontWeight:600}}>{t.name}</td>
             <td style={{fontSize:11,color:T.muted}}>{JOB_TYPES.find(x=>x.id===t.job_type)?.label||t.job_type}</td>
             <td style={{fontSize:12,color:T.muted}}>{t.dest_name||"—"}</td>
@@ -3100,10 +3101,7 @@ function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTe
             <td><span className="badge badge-neu">{recurLabel(t.recurrence_type,t.recurrence_n)}</span></td>
             <td className="mono" style={{fontSize:11}}>{t.next_due||"—"}</td>
             <td className="num" style={{color:T.muted}}>{templateMaterials.filter(m=>m.template_id===t.id).length}</td>
-            <td style={{display:"flex",gap:5}}>
-              <button className="btn btn-ghost btn-sm" onClick={()=>openEdit(t)}>Edit</button>
-              <button className="btn btn-danger btn-sm" onClick={()=>remove(t)}>x</button>
-            </td>
+            <td className="num"><button className="btn btn-ghost btn-sm" onClick={e=>{e.stopPropagation();openEdit(t);}}>Open</button></td>
           </tr>
         ))}
         {templates.length===0&&<tr><td colSpan={8} className="empty">No job templates yet for this location</td></tr>}
@@ -3111,14 +3109,22 @@ function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTe
     </table></div>
 
     {showForm&&(
-      <div className="overlay" onClick={e=>e.target===e.currentTarget&&setShowForm(false)}>
-        <div className="modal">
-          <div className="modal-title">{editId?"Edit":"Add"} <span>Job Template</span></div>
-          <div className="field"><label>Job Name</label>
-            <input type="text" value={form.name} onChange={f("name")} placeholder="e.g. Service generator"/>
-          </div>
-          <div className="grid2">
-            <div className="field"><label>Job Type</label>
+      <Drawer title={editId ? (form.name || "Job template") : "New job template"}
+        meta={editId ? `${JOB_TYPES.find(x=>x.id===form.job_type)?.label||form.job_type} · ${recurLabel(form.recurrence_type, parseInt(form.recurrence_n)||1)}` : "Templates define recurring maintenance; saving schedules the first job."}
+        tabs={[{id:"job",label:"Job"},{id:"schedule",label:"Schedule"},{id:"materials",label:"Materials",count:rows.filter(r=>r.item_id).length}]}
+        tab={tab} onTab={setTab} onClose={()=>setShowForm(false)}
+        footer={<>
+          <button className="btn btn-primary" onClick={save} disabled={busy||!form.name.trim()}>{busy?"Saving...":(editId?"Save changes":"Create template")}</button>
+          <button className="btn btn-ghost" onClick={()=>setShowForm(false)} disabled={busy}>Cancel</button>
+          {editId && <button className="btn btn-danger" onClick={()=>{ const t=templates.find(x=>x.id===editId); if(t) remove(t); setShowForm(false); }}>Delete</button>}
+          <span className="hint">Each completion schedules the next job from the actual completion date</span>
+        </>}>
+        {tab==="job" && (
+          <div className="drawer-grid">
+            <div className="field full"><label>Job name</label>
+              <input type="text" value={form.name} onChange={f("name")} placeholder="e.g. Service generator" autoFocus={!editId}/>
+            </div>
+            <div className="field"><label>Job type</label>
               <select value={form.job_type} onChange={f("job_type")}>
                 {JOB_TYPES.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}
               </select>
@@ -3129,85 +3135,88 @@ function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTe
                 {locDests.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}
               </select>
             </div>
-            <div className="field"><label>Repeats</label>
-              <select value={form.recurrence_type} onChange={f("recurrence_type")}>
-                {RECURRENCE.map(r=><option key={r.id} value={r.id}>{r.label}</option>)}
-              </select>
-            </div>
-            {form.recurrence_type!=="none" && (
-              <div className="field"><label>Interval (N)</label>
-                <input type="number" inputMode="decimal" min="1" value={form.recurrence_n} onChange={f("recurrence_n")}/>
-              </div>
-            )}
-            <div className="field"><label>First / Next Due</label>
-              <DateField value={form.next_due} onChange={v=>setForm(p=>({...p,next_due:v}))}/>
-            </div>
-            {/* #456. Optional on purpose. Blank keeps the old behaviour —
-                one job at a time, rolled forward from each completion — so
-                every template that exists today is untouched. */}
-            {form.recurrence_type!=="none" && (
-              <div className="field"><label>Repeat Until (optional)</label>
-                <DateField value={form.recurrence_end_date} onChange={v=>setForm(p=>({...p,recurrence_end_date:v}))}/>
-              </div>
-            )}
-            <div className="field"><label>Assigned To</label>
+            <div className="field"><label>Assigned to</label>
               <AssignedToField hrEmployees={hrEmployees} value={form.assigned_to} onChange={v=>setForm(p=>({...p,assigned_to:v}))}/>
             </div>
-          </div>
-          <div className="field"><label>Description</label>
-            <textarea rows={2} value={form.description} onChange={f("description")}/>
-          </div>
-
-          <MaterialPicker items={items} rows={rows} setRows={setRows}/>
-
-          {form.recurrence_type!=="none" && (
-            <div className="info-box">
-              <span style={{fontSize:11,color:T.muted}}>Schedule</span>
-              <strong style={{color:T.gold,fontSize:12}}>{recurLabel(form.recurrence_type, parseInt(form.recurrence_n)||1)}</strong>
+            <div className="field"/>
+            <div className="field full"><label>Description</label>
+              <textarea rows={3} value={form.description} onChange={f("description")}/>
             </div>
-          )}
-
-          {/* THE COUNT, BEFORE ANYTHING IS WRITTEN. Saving with an end date
-              creates real job cards, and "47 cards" is the sort of thing
-              worth knowing in advance rather than discovering in the
-              calendar afterwards. */}
-          {form.recurrence_type!=="none" && form.recurrence_end_date && (()=>{
-            const preview = describeGeneration(
-              { next_due:form.next_due, recurrence_type:form.recurrence_type,
-                recurrence_n:parseInt(form.recurrence_n)||1,
-                recurrence_end_date:form.recurrence_end_date },
-              editId ? jobs.filter(j=>j.template_id===editId) : [],
-            );
-            return (
-              <div className="info-box" style={{display:"block"}}>
-                <div style={{fontSize:11,color:T.muted,marginBottom:3}}>Saving will create</div>
-                <strong style={{color:T.gold,fontSize:13}}>
-                  {preview.toCreate} job card{preview.toCreate===1?"":"s"}
-                </strong>
-                {preview.toCreate>0 && (
-                  <span style={{fontSize:11,color:T.muted}}> — {preview.first} through {preview.last}</span>
-                )}
-                {preview.alreadyThere>0 && (
-                  <div style={{fontSize:11,color:T.muted,marginTop:3}}>
-                    {preview.alreadyThere} of the {preview.total} already exist and are left alone.
-                  </div>
-                )}
-                {preview.cappedAt && (
-                  <div style={{fontSize:11,color:T.bad,marginTop:3}}>
-                    Capped at {preview.cappedAt}. Shorten the end date, or lengthen the interval —
-                    generating more than that is almost always a mistake in the interval.
-                  </div>
-                )}
-              </div>
-            );
-          })()}
-
-          <div style={{display:"flex",gap:9}}>
-            <button className="btn btn-primary" onClick={save} disabled={busy}>{busy?"Saving...":(editId?"Save Changes":"Create Template")}</button>
-            <button className="btn btn-ghost" onClick={()=>setShowForm(false)} disabled={busy}>Cancel</button>
           </div>
-        </div>
-      </div>
+        )}
+
+        {tab==="schedule" && (
+          <>
+            <div className="drawer-grid">
+              <div className="field"><label>Repeats</label>
+                <select value={form.recurrence_type} onChange={f("recurrence_type")}>
+                  {RECURRENCE.map(r=><option key={r.id} value={r.id}>{r.label}</option>)}
+                </select>
+              </div>
+              {form.recurrence_type!=="none" ? (
+                <div className="field"><label>Interval (N)</label>
+                  <input type="number" inputMode="decimal" min="1" value={form.recurrence_n} onChange={f("recurrence_n")}/>
+                  <div className="help">{recurLabel(form.recurrence_type, parseInt(form.recurrence_n)||1)}</div>
+                </div>
+              ) : <div className="field"/>}
+              <div className="field"><label>First / next due</label>
+                <DateField value={form.next_due} onChange={v=>setForm(p=>({...p,next_due:v}))}/>
+              </div>
+              {/* #456. Optional on purpose. Blank keeps the old behaviour —
+                  one job at a time, rolled forward from each completion — so
+                  every template that exists today is untouched. */}
+              {form.recurrence_type!=="none" && (
+                <div className="field"><label>Repeat until (optional)</label>
+                  <DateField value={form.recurrence_end_date} onChange={v=>setForm(p=>({...p,recurrence_end_date:v}))}/>
+                  <div className="help">With an end date every job card is created now; without one, one at a time.</div>
+                </div>
+              )}
+            </div>
+
+            {/* THE COUNT, BEFORE ANYTHING IS WRITTEN. Saving with an end date
+                creates real job cards, and "47 cards" is the sort of thing
+                worth knowing in advance rather than discovering in the
+                calendar afterwards. */}
+            {form.recurrence_type!=="none" && form.recurrence_end_date && (()=>{
+              const preview = describeGeneration(
+                { next_due:form.next_due, recurrence_type:form.recurrence_type,
+                  recurrence_n:parseInt(form.recurrence_n)||1,
+                  recurrence_end_date:form.recurrence_end_date },
+                editId ? jobs.filter(j=>j.template_id===editId) : [],
+              );
+              return (
+                <div className="drawer-note" style={{marginTop:16}}>
+                  <div style={{fontSize:11,color:T.muted,marginBottom:3}}>Saving will create</div>
+                  <strong style={{color:T.gold,fontSize:13}}>
+                    {preview.toCreate} job card{preview.toCreate===1?"":"s"}
+                  </strong>
+                  {preview.toCreate>0 && (
+                    <span style={{fontSize:11,color:T.muted}}> — {preview.first} through {preview.last}</span>
+                  )}
+                  {preview.alreadyThere>0 && (
+                    <div style={{fontSize:11,color:T.muted,marginTop:3}}>
+                      {preview.alreadyThere} of the {preview.total} already exist and are left alone.
+                    </div>
+                  )}
+                  {preview.cappedAt && (
+                    <div style={{fontSize:11,color:T.bad,marginTop:3}}>
+                      Capped at {preview.cappedAt}. Shorten the end date, or lengthen the interval —
+                      generating more than that is almost always a mistake in the interval.
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </>
+        )}
+
+        {tab==="materials" && (
+          <>
+            <MaterialPicker items={items} rows={rows} setRows={setRows}/>
+            <div style={{fontSize:11,color:T.muted}}>Copied onto every job this template schedules. One-off extras added at completion never come back here.</div>
+          </>
+        )}
+      </Drawer>
     )}
   </>);
 }

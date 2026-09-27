@@ -193,7 +193,7 @@ const callsTo = (name) => {
 // ---------------------------------------------------------------------------
 // 4. #456 — THE END DATE IS COLLECTED, SAVED AND ACTED ON.
 {
-  check('there is a field for it', /Repeat Until/.test(APP))
+  check('there is a field for it', /Repeat until \(optional\)/.test(APP))
   check('the blank form has it', /recurrence_end_date:""\}/.test(APP))
   check('editing an existing template loads it', /recurrence_end_date:t\.recurrence_end_date/.test(APP))
   check(

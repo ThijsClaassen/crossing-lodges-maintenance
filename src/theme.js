@@ -453,4 +453,12 @@ export const css = `
   .field .help{font-size:11.5px;color:${T.muted};margin-top:5px;line-height:1.45}
   .field.full{grid-column:1/-1}
   @media (max-width:768px){.drawer{width:100%}.drawer-body{padding:16px}.drawer-head{padding:14px 16px 0}.drawer-foot{padding:12px 16px;flex-wrap:wrap}}
+
+  /* Lists behind a drawer (readability pass 2026-09-27) */
+  .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+  .toolbar input,.toolbar select{background:${T.panel};border:1px solid ${T.border};border-radius:6px;color:${T.cream};font-family:'Inter',sans-serif;font-size:13px;padding:7px 10px}
+  .toolbar input{flex:1;min-width:180px;max-width:320px}
+  tr.row-open{cursor:pointer}
+  tr.row-open:hover td{background:var(--accent-wash)}
+  td .sub2{display:block;color:${T.muted};font-size:11px;margin-top:2px;font-weight:400}
 `;
