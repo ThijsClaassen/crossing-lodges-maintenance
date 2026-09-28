@@ -3722,7 +3722,8 @@ function InternalBillingPage({ invoices, projectInvoices, vehicleTrips, projects
       if(!companyId) return;
       try{
         const [y,m] = month.split("-").map(Number);
-        const lastDay = new Date(y, m, 0).toISOString().slice(0,10);
+        // Local day number, not toISOString(): local midnight is the previous UTC day in SA, which read 30 Sep as "09-29" (fixed 2026-09-28).
+        const lastDay = `${month}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`;
         const { data, error } = await supabase.rpc("get_maintenance_department_cost", {
           p_company_id: companyId, p_as_of_date: lastDay,
         });
