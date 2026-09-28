@@ -16,6 +16,7 @@ import { parse } from '@babel/parser'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const APP = readFileSync(join(here, '..', 'src', 'App.jsx'), 'utf8')
+
 const THEME = readFileSync(join(here, '..', 'src', 'theme.js'), 'utf8')
 
 let failed = 0
@@ -66,6 +67,16 @@ check('job template form is a drawer with Job · Schedule · Materials', /\{id:"
 check('template rows open the drawer', /className="row-open" onClick=\{\(\)=>openEdit\(t\)\}/.test(jt))
 check('the generation preview (#456) survives on the Schedule tab', /describeGeneration\(/.test(jt) && /Saving will create/.test(jt))
 check('delete moved into the drawer footer', />Delete<\/button>/.test(jt) && !/btn-danger btn-sm" onClick=\{\(\)=>remove\(t\)\}>x/.test(jt))
+
+// The drawer grows to fit its content instead of scrolling sideways (2026-09-28).
+{
+  const drawerSrc = APP
+  const fit = drawerSrc.slice(drawerSrc.indexOf('function Drawer('), drawerSrc.indexOf('function Drawer(') + 4000)
+  const okFit = /const overflow = el\.scrollWidth - el\.clientWidth/.test(fit) && /setFitWidth\(/.test(fit) && /window\.innerWidth - 250/.test(fit) && /new ResizeObserver\(measure\)/.test(fit) && /style=\{fitWidth \? \{ width: fitWidth \} : undefined\}/.test(fit) && /className="drawer-body" ref=\{bodyRef\}/.test(fit)
+  const okMobile = /window\.innerWidth <= 768\) return/.test(fit)
+  check('drawer widens itself when its content would scroll sideways (capped at screen minus sidebar)', okFit)
+  check('drawer never grows past a phone or tablet screen', okMobile)
+}
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nall job drawer checks pass')
 process.exit(failed ? 1 : 0)
