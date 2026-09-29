@@ -16,6 +16,7 @@ import { listMembers as listBillingMembers, logMemberPurchase, listPendingCharge
 import { wholeLine, validateSplits, planWrites, proRata } from "./splitLines.js";
 import { jobCostBreakdown, invoiceTotalDisagrees } from "./jobCosting.js";
 import { missingOccurrences, nextDueOnCompletion, nextDueFromOpenJobs, describeGeneration } from "./recurrence.js";
+import { todayIso } from './dates.js'
 
 const fmtR  = n=>`R ${Number(n||0).toLocaleString("en-ZA",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 const fmtN  = n=>Number(n||0).toLocaleString("en-ZA",{maximumFractionDigits:3});
@@ -760,7 +761,7 @@ function MaintSlipScanCard({ items, locId, companyId, onSaved, memberBillingEnab
         return { key: idx, raw_text: li.raw_text, item_id: m.confident?m.match.id:"", confident:m.confident, guessName:m.match?.description||"", qty: li.qty??1, raw_total:rawTotal, total_cost:rawTotal, skip:false, billToMember:false, splits: wholeLine("lodge", li.qty??1), splitOpen:false };
       });
       setReview({
-        date: fromISO(data.date_guess || new Date().toISOString().slice(0,10)),
+        date: fromISO(data.date_guess || todayIso()),
         supplier: data.supplier_guess||"",
         slipTotal: data.slip_total ?? null,
         pricesIncludeVat, vatRate,
@@ -986,7 +987,7 @@ function ViewSlipLink({ storagePath }) {
 // memberBillingEnabled is true for the current company (Demo only today).
 function MemberPurchaseModal({ companyId, locId, onClose, pendingRefresh, onBilled }) {
   const [members,setMembers]=useState([]);
-  const [form,setForm]=useState({member_id:"",date:new Date().toISOString().slice(0,10),description:"",amount:""});
+  const [form,setForm]=useState({member_id:"",date:todayIso(),description:"",amount:""});
   const [saving,setSaving]=useState(false);
   const [message,setMessage]=useState("");
 
@@ -3285,7 +3286,7 @@ async function generateJobInvoice({ job, laborInserts, materialLines, items, pur
       return sum + m.qty*weightedCost(item, purchases);
     }, 0);
 
-    const asOfIso = dmyToIso(completedDate) || new Date().toISOString().slice(0,10);
+    const asOfIso = dmyToIso(completedDate) || todayIso();
 
     // One rate lookup per unique employee on this job, not per labor row.
     const rateByEmployee = {};
@@ -3659,7 +3660,7 @@ function DestinationCosts({ destinations, issues, items, purchases, jobs }) {
 // do) isn't separately tracked here; it simply isn't billed to anyone. Worth
 // knowing, not fixed here.
 function InternalBillingPage({ invoices, projectInvoices, vehicleTrips, projects, workstreams, billingSettings, setBillingSettings, companyId }) {
-  const [month, setMonth]           = useState(()=>new Date().toISOString().slice(0,7)); // YYYY-MM
+  const [month, setMonth]           = useState(()=>todayIso().slice(0, 7)); // YYYY-MM
   const [hoursInput, setHoursInput] = useState(String(billingSettings?.standard_hours_per_month || 190));
   const [savingHours, setSavingHours] = useState(false);
   const [deptCost, setDeptCost]     = useState(null);
@@ -4239,7 +4240,7 @@ function ProjectsPage({ locId, projects, workstreams, workstreamStatus, progress
 }
 
 function NewProjectForm({ locId, companyId, setProjects, onClose }) {
-  const isoToday = new Date().toISOString().slice(0,10);
+  const isoToday = todayIso();
   const [form, setForm] = useState({name:"",description:"",location_id:locId,start_date:isoToday,target_end_date:"",status:"planning"});
   const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
   const [saving, setSaving] = useState(false);
@@ -4759,7 +4760,7 @@ function EditLogForm({ log, workstream, setProgressLogs, setProjectInvoices, ref
 }
 
 function WeeklyLogForm({ workstream, project, items, purchases, companyId, hrEmployees, setProgressLogs, setProgressCrew, setProgressMaterials, refreshWorkstreamStatus, onTargetReached, onClose }) {
-  const isoToday = new Date().toISOString().slice(0,10);
+  const isoToday = todayIso();
   const [form, setForm] = useState({week_ending:isoToday, qty_done:"", cost_incurred:"", notes:""});
   const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
   const [saving, setSaving] = useState(false);
@@ -5007,7 +5008,7 @@ function EditWorkstreamForm({ workstream, setWorkstreams, refreshWorkstreamStatu
 }
 
 function NewWorkstreamForm({ project, companyId, setWorkstreams, refreshWorkstreamStatus, onClose }) {
-  const isoToday = new Date().toISOString().slice(0,10);
+  const isoToday = todayIso();
   const [form, setForm] = useState({name:"",unit:"km",target_qty:"",baseline_qty:"0",baseline_date:isoToday,budget_cost:"",estimate_unit:"weeks",estimate_value:""});
   const f = k => e => setForm(p=>({...p,[k]:e.target.value}));
   const [saving, setSaving] = useState(false);
