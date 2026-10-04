@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment, useLayoutEffect } from "react";
+import { useBackToHome } from './backButton.js'
 import { prepareSlipImages, readSlipParts } from "./slipTiles.js";
 import { sb, LOCATIONS, LOC_COLORS } from "./sb.js";
 import { subscribe as subscribeOffline, listRejected, retryRejected, discardEntry, syncNow } from "./offline.js";
@@ -17,6 +18,7 @@ import { wholeLine, validateSplits, planWrites, proRata } from "./splitLines.js"
 import { jobCostBreakdown, invoiceTotalDisagrees } from "./jobCosting.js";
 import { missingOccurrences, nextDueOnCompletion, nextDueFromOpenJobs, describeGeneration } from "./recurrence.js";
 import { todayIso } from './dates.js'
+import { MONTHS, monthlyGrid, rainSummary, existingReading, bikeSummary, sortBikes, repeatProblems } from './rainMtb.js'
 
 const fmtR  = n=>`R ${Number(n||0).toLocaleString("en-ZA",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 const fmtN  = n=>Number(n||0).toLocaleString("en-ZA",{maximumFractionDigits:3});
@@ -552,6 +554,391 @@ function Destinations({ locId, destinations, setDestinations, companyId }) {
       </div>
     )}
   </>);
+}
+
+// ─── RAINFALL (#553, 2026-10-04) ─────────────────────────────────────────────
+// Thijs: "add a section where we save rain fall." One reading per lodge per
+// day (mm); logging the same lodge and day again corrects it. Totals by month
+// per lodge for a year, plus this month / year to date / rain season (Jul–Jun)
+// against the same span last year. Loads its own rows, so the app's big
+// loader is untouched. Maths in rainMtb.js.
+function RainfallPage({ locId, companyId }) {
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState("");
+  const isoToday = todayIso();
+  const [year, setYear] = useState(Number(isoToday.slice(0, 4)));
+  const blank = () => ({ reading_date: isoToday, location_id: locId, mm: "", notes: "", recorded_by: "" });
+  const [form, setForm] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!companyId) return;
+    try { setRows(await sb.select("maint_rainfall", `company_id=eq.${companyId}`)); setErr(""); }
+    catch (e) { setRows([]); setErr(/maint_rainfall/.test(e.message) ? "The rainfall table isn't set up yet — run add_rainfall_and_mtb.sql." : e.message); }
+  }, [companyId]);
+  useEffect(() => { load(); }, [load]);
+
+  const lodges = LOCATIONS;
+  const locName = id => lodges.find(l => l.id === id)?.name || id;
+  const all = rows || [];
+  const summary = rainSummary(all, { today: isoToday, locId });
+  const grid = monthlyGrid(all, year, lodges.map(l => l.id));
+  const lastYear = monthlyGrid(all, year - 1, lodges.map(l => l.id));
+  const years = [...new Set([Number(isoToday.slice(0, 4)), ...all.map(r => Number(String(r.reading_date).slice(0, 4)))])].sort((a, b) => b - a);
+  const recent = [...all].sort((a, b) => String(b.reading_date).localeCompare(String(a.reading_date))).slice(0, 30);
+  const mmFmt = n => (Math.round((Number(n) || 0) * 10) / 10).toLocaleString("en-ZA");
+  const vsLast = (now, then) => then > 0 ? ` · last year ${mmFmt(then)} mm` : "";
+
+  const save = async () => {
+    const mm = parseFloat(form.mm);
+    if (!form.reading_date || !form.location_id) return alert("Pick a date and a lodge.");
+    if (!(mm >= 0)) return alert("Enter the rain in mm (0 is fine for a dry gauge check).");
+    setSaving(true);
+    try {
+      const existing = existingReading(all, form);
+      const patch = { mm, notes: form.notes.trim() || null, recorded_by: form.recorded_by.trim() || null };
+      if (existing) {
+        await sb.update("maint_rainfall", existing.id, patch);
+        setRows(p => p.map(r => r.id === existing.id ? { ...r, ...patch } : r));
+      } else {
+        const row = { id: uid(), company_id: companyId, location_id: form.location_id, reading_date: form.reading_date, ...patch };
+        await sb.insert("maint_rainfall", row);
+        setRows(p => [...(p || []), row]);
+      }
+      setForm(null);
+    } catch (e) { alert("Save failed: " + e.message); }
+    finally { setSaving(false); }
+  };
+  const remove = async r => {
+    if (!window.confirm(`Delete ${mmFmt(r.mm)} mm on ${r.reading_date} at ${locName(r.location_id)}?`)) return;
+    try { await sb.delete("maint_rainfall", r.id); setRows(p => p.filter(x => x.id !== r.id)); }
+    catch (e) { alert("Error: " + e.message); }
+  };
+  const existingForForm = form ? existingReading(all, form) : null;
+
+  return (<>
+    <div className="strip">
+      <div className="strip-item"><div className="strip-label">This month — {locName(locId)}</div><div className="strip-val">{mmFmt(summary.month)} mm</div></div>
+      <div className="strip-item"><div className="strip-label">Year to date</div><div className="strip-val">{mmFmt(summary.yearToDate)} mm</div>
+        <div style={{fontSize:10,color:T.muted,marginTop:2}}>{vsLast(summary.yearToDate, summary.yearToDateLastYear).replace(/^ · /, "") || "nothing logged last year"}</div></div>
+      <div className="strip-item"><div className="strip-label">Season {summary.seasonLabel} (from 1 Jul)</div><div className="strip-val">{mmFmt(summary.season)} mm</div>
+        <div style={{fontSize:10,color:T.muted,marginTop:2}}>{vsLast(summary.season, summary.seasonLastYear).replace(/^ · /, "") || "nothing logged last season"}</div></div>
+      <div className="strip-item"><div className="strip-label">Last rain</div><div className="strip-val">{summary.lastRain || "—"}</div></div>
+      <div style={{marginLeft:"auto"}}><button className="btn btn-primary" onClick={() => setForm(blank())}>+ Log rain</button></div>
+    </div>
+    {err && <div className="info-box" style={{color:T.danger}}>{err}</div>}
+    {rows === null && <div className="empty">Loading…</div>}
+
+    {rows !== null && (<>
+      <div style={{display:"flex",alignItems:"center",gap:10,margin:"6px 0 10px"}}>
+        <div className="section-title" style={{margin:0}}>Rain per month (mm)</div>
+        <select value={year} onChange={e => setYear(Number(e.target.value))} style={{marginLeft:"auto"}}>
+          {years.map(y => <option key={y} value={y}>{y}</option>)}
+        </select>
+      </div>
+      <div className="tbl-wrap"><table className="tbl">
+        <thead><tr><th>Month</th>{lodges.map(l => <th key={l.id} className="num">{l.name || l.id}</th>)}<th className="num">All lodges</th><th className="num">Last year</th></tr></thead>
+        <tbody>
+          {MONTHS.map((m, i) => (
+            <tr key={m}>
+              <td>{m}</td>
+              {lodges.map(l => <td key={l.id} className="num mono">{grid[l.id][i] ? mmFmt(grid[l.id][i]) : "—"}</td>)}
+              <td className="num mono" style={{fontWeight:600}}>{grid.total[i] ? mmFmt(grid.total[i]) : "—"}</td>
+              <td className="num mono" style={{color:T.muted}}>{lastYear.total[i] ? mmFmt(lastYear.total[i]) : "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot><tr>
+          <th>Total {year}</th>
+          {lodges.map(l => <th key={l.id} className="num mono">{mmFmt(grid[l.id].reduce((s, x) => s + x, 0))}</th>)}
+          <th className="num mono">{mmFmt(grid.total.reduce((s, x) => s + x, 0))}</th>
+          <th className="num mono" style={{color:T.muted}}>{mmFmt(lastYear.total.reduce((s, x) => s + x, 0))}</th>
+        </tr></tfoot>
+      </table></div>
+      <div style={{fontSize:11,color:T.muted,margin:"6px 0 18px"}}>"All lodges" adds the lodges' gauges together; read a single lodge's column for what fell there.</div>
+
+      <div className="section-title">Latest readings</div>
+      <div className="tbl-wrap"><table className="tbl">
+        <thead><tr><th>Date</th><th>Lodge</th><th className="num">mm</th><th>Notes</th><th>By</th><th></th></tr></thead>
+        <tbody>
+          {recent.map(r => (
+            <tr key={r.id}>
+              <td className="mono">{r.reading_date}</td><td>{locName(r.location_id)}</td>
+              <td className="num mono" style={{fontWeight:600}}>{mmFmt(r.mm)}</td>
+              <td style={{color:T.muted}}>{r.notes || "—"}</td><td style={{color:T.muted}}>{r.recorded_by || "—"}</td>
+              <td style={{display:"flex",gap:5}}>
+                <button className="btn btn-ghost btn-sm" onClick={() => setForm({ reading_date: r.reading_date, location_id: r.location_id, mm: String(r.mm), notes: r.notes || "", recorded_by: r.recorded_by || "" })}>Edit</button>
+                <button className="btn btn-danger btn-sm" onClick={() => remove(r)}>x</button>
+              </td>
+            </tr>
+          ))}
+          {recent.length === 0 && <tr><td colSpan={6} className="empty">No rain logged yet. Use “+ Log rain” after reading the gauge.</td></tr>}
+        </tbody>
+      </table></div>
+    </>)}
+
+    {form && (
+      <div className="overlay" onClick={e => e.target === e.currentTarget && setForm(null)}>
+        <div className="modal" style={{maxWidth:420}}>
+          <div className="modal-title">Log <span>Rain</span></div>
+          <div className="grid2">
+            <div className="field"><label>Date</label><input type="date" value={form.reading_date} max={isoToday} onChange={e => setForm(f => ({ ...f, reading_date: e.target.value }))}/></div>
+            <div className="field"><label>Lodge</label>
+              <select value={form.location_id} onChange={e => setForm(f => ({ ...f, location_id: e.target.value }))}>
+                {lodges.map(l => <option key={l.id} value={l.id}>{l.name || l.id}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="field"><label>Rain (mm)</label><input type="number" inputMode="decimal" min="0" step="0.1" autoFocus value={form.mm} onChange={e => setForm(f => ({ ...f, mm: e.target.value }))}/></div>
+          <div className="grid2">
+            <div className="field"><label>Notes</label><input type="text" placeholder="e.g. hail, storm overnight" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}/></div>
+            <div className="field"><label>Read by</label><input type="text" value={form.recorded_by} onChange={e => setForm(f => ({ ...f, recorded_by: e.target.value }))}/></div>
+          </div>
+          {existingForForm && <div style={{fontSize:12,color:T.warn,marginBottom:10}}>{mmFmt(existingForForm.mm)} mm is already logged for this lodge and day — saving replaces it.</div>}
+          <div style={{display:"flex",gap:9}}>
+            <button className="btn btn-primary" disabled={saving} onClick={save}>{saving ? "Saving…" : existingForForm ? "Replace reading" : "Save"}</button>
+            <button className="btn btn-ghost" onClick={() => setForm(null)}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    )}
+  </>);
+}
+
+// ─── MTB (#556, 2026-10-04) ──────────────────────────────────────────────────
+// Thijs: "MTB section … where we can keep track of problems per mountain
+// bike." A register of the bikes per lodge and a problem log per bike:
+// reported → fixed (date, what was done, cost). Bikes with open problems sit
+// at the top. Anyone can log a problem or mark it fixed; adding, editing or
+// retiring a bike is for admins. Maths in rainMtb.js.
+const BLANK_BIKE = () => ({ code: "", make_model: "", frame_size: "", serial_number: "", purchase_date: "", notes: "" });
+
+function MtbPage({ locId, companyId, isAdmin }) {
+  const [bikes, setBikes] = useState(null);
+  const [issues, setIssues] = useState([]);
+  const [err, setErr] = useState("");
+  const [showRetired, setShowRetired] = useState(false);
+  const [openId, setOpenId] = useState(null);
+  const [newBike, setNewBike] = useState(null);
+
+  const load = useCallback(async () => {
+    if (!companyId) return;
+    try {
+      const cf = `company_id=eq.${companyId}`;
+      const [b, i] = await Promise.all([sb.select("mtb_bikes", cf), sb.select("mtb_issues", cf)]);
+      setBikes(b); setIssues(i); setErr("");
+    } catch (e) { setBikes([]); setErr(/mtb_/.test(e.message) ? "The MTB tables aren't set up yet — run add_rainfall_and_mtb.sql." : e.message); }
+  }, [companyId]);
+  useEffect(() => { load(); }, [load]);
+
+  const here = (bikes || []).filter(b => b.location_id === locId && (showRetired || b.active !== false));
+  const sorted = sortBikes(here, issues);
+  const openProblems = issues.filter(i => i.status !== "fixed" && here.some(b => b.id === i.bike_id)).length;
+  const yearSpend = issues.filter(i => here.some(b => b.id === i.bike_id) && String(i.fixed_on || i.reported_on || "").slice(0, 4) === todayIso().slice(0, 4))
+    .reduce((s, i) => s + (Number(i.cost) || 0), 0);
+  const openBike = openId ? (bikes || []).find(b => b.id === openId) : null;
+
+  const addBike = async () => {
+    if (!newBike.code.trim()) return alert("Give the bike its number / name, e.g. MTB 07.");
+    const row = { id: uid(), company_id: companyId, location_id: locId, code: newBike.code.trim(),
+      make_model: newBike.make_model.trim() || null, frame_size: newBike.frame_size.trim() || null,
+      serial_number: newBike.serial_number.trim() || null, purchase_date: newBike.purchase_date || null,
+      notes: newBike.notes.trim() || null, active: true };
+    try { await sb.insert("mtb_bikes", row); setBikes(p => [...(p || []), row]); setNewBike(null); }
+    catch (e) { alert("Save failed: " + e.message); }
+  };
+
+  return (<>
+    <div className="strip">
+      <div className="strip-item"><div className="strip-label">Bikes</div><div className="strip-val">{here.filter(b => b.active !== false).length}</div></div>
+      <div className="strip-item"><div className="strip-label">Open problems</div><div className="strip-val" style={{color: openProblems ? T.warn : undefined}}>{openProblems}</div></div>
+      <div className="strip-item"><div className="strip-label">Repair spend {todayIso().slice(0, 4)}</div><div className="strip-val">{fmtR(yearSpend)}</div></div>
+      <div style={{marginLeft:"auto",display:"flex",gap:8,alignItems:"center"}}>
+        <label style={{fontSize:12,color:T.muted,display:"flex",gap:6,alignItems:"center",cursor:"pointer"}}>
+          <input type="checkbox" checked={showRetired} onChange={e => setShowRetired(e.target.checked)}/> Show retired
+        </label>
+        {isAdmin && <button className="btn btn-primary" onClick={() => setNewBike(BLANK_BIKE())}>+ Add bike</button>}
+      </div>
+    </div>
+    {err && <div className="info-box" style={{color:T.danger}}>{err}</div>}
+    {bikes === null && <div className="empty">Loading…</div>}
+    {bikes !== null && (
+      <div className="tbl-wrap"><table className="tbl">
+        <thead><tr><th>Bike</th><th>Status</th><th>Latest problem</th><th className="num">Problems</th><th className="num">Spend</th><th></th></tr></thead>
+        <tbody>
+          {sorted.map(({ bike: b, s }) => (
+            <tr key={b.id} style={{cursor:"pointer",opacity: b.active === false ? .55 : 1}} onClick={() => setOpenId(b.id)}>
+              <td><div style={{fontWeight:600}}>{b.code}</div><div style={{fontSize:11,color:T.muted}}>{[b.make_model, b.frame_size && `size ${b.frame_size}`].filter(Boolean).join(" · ") || "—"}</div></td>
+              <td>{b.active === false ? <span className="badge badge-neu">Retired</span>
+                : s.open ? <span className="badge badge-warn">{s.open} open · since {s.oldestOpen}</span>
+                : <span className="badge badge-ok">Ready</span>}</td>
+              <td style={{color:T.muted}}>{s.latest ? `${s.latest.reported_on} — ${s.latest.problem}` : "—"}</td>
+              <td className="num mono">{s.problems}</td>
+              <td className="num mono">{s.spend ? fmtR(s.spend) : "—"}</td>
+              <td><button className="btn btn-ghost btn-sm" onClick={e => { e.stopPropagation(); setOpenId(b.id); }}>Open</button></td>
+            </tr>
+          ))}
+          {sorted.length === 0 && <tr><td colSpan={6} className="empty">{isAdmin ? "No bikes yet at this lodge — add them with “+ Add bike”." : "No bikes registered at this lodge yet — ask an admin to add them."}</td></tr>}
+        </tbody>
+      </table></div>
+    )}
+
+    {newBike && (
+      <div className="overlay" onClick={e => e.target === e.currentTarget && setNewBike(null)}>
+        <div className="modal" style={{maxWidth:460}}>
+          <div className="modal-title">Add <span>Bike</span></div>
+          <BikeFields value={newBike} onChange={setNewBike}/>
+          <div style={{display:"flex",gap:9}}>
+            <button className="btn btn-primary" onClick={addBike}>Save</button>
+            <button className="btn btn-ghost" onClick={() => setNewBike(null)}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {openBike && (
+      <BikeDrawer key={openBike.id} bike={openBike} issues={issues.filter(i => i.bike_id === openBike.id)} companyId={companyId} isAdmin={isAdmin}
+        onClose={() => setOpenId(null)}
+        onBike={row => setBikes(p => p.map(b => b.id === row.id ? row : b))}
+        onIssues={fn => setIssues(fn)}/>
+    )}
+  </>);
+}
+
+function BikeFields({ value, onChange, disabled }) {
+  const f = k => e => onChange({ ...value, [k]: e.target.value });
+  return (<>
+    <div className="grid2">
+      <div className="field"><label>Number / name</label><input type="text" autoFocus={!disabled} disabled={disabled} placeholder="e.g. MTB 07" value={value.code} onChange={f("code")}/></div>
+      <div className="field"><label>Make / model</label><input type="text" disabled={disabled} value={value.make_model} onChange={f("make_model")}/></div>
+      <div className="field"><label>Frame size</label><input type="text" disabled={disabled} placeholder="e.g. M, 17&quot;" value={value.frame_size} onChange={f("frame_size")}/></div>
+      <div className="field"><label>Serial number</label><input type="text" disabled={disabled} value={value.serial_number} onChange={f("serial_number")}/></div>
+      <div className="field"><label>Bought</label><input type="date" disabled={disabled} value={value.purchase_date} onChange={f("purchase_date")}/></div>
+      <div className="field"><label>Notes</label><input type="text" disabled={disabled} value={value.notes} onChange={f("notes")}/></div>
+    </div>
+  </>);
+}
+
+const BIKE_TABS = [{ id: "problems", label: "Problems" }, { id: "details", label: "Bike details" }];
+
+function BikeDrawer({ bike, issues, companyId, isAdmin, onClose, onBike, onIssues }) {
+  const [tab, setTab] = useState("problems");
+  const isoToday = todayIso();
+  const [report, setReport] = useState({ reported_on: isoToday, problem: "", reported_by: "" });
+  const [fixing, setFixing] = useState(null);   // { id, fixed_on, fix_notes, cost }
+  const [details, setDetails] = useState(() => Object.fromEntries(Object.entries(BLANK_BIKE()).map(([k]) => [k, bike[k] ?? ""])));
+  const [saving, setSaving] = useState(false);
+  const s = bikeSummary(bike, issues);
+  const repeats = repeatProblems(issues, bike.id);
+  const list = [...issues].sort((a, b) => (a.status === "fixed") - (b.status === "fixed") || String(b.reported_on).localeCompare(String(a.reported_on)));
+
+  const logProblem = async () => {
+    if (!report.problem.trim()) return alert("Describe the problem.");
+    const row = { id: uid(), company_id: companyId, bike_id: bike.id, reported_on: report.reported_on || isoToday,
+      problem: report.problem.trim(), reported_by: report.reported_by.trim() || null, status: "open" };
+    setSaving(true);
+    try { await sb.insert("mtb_issues", row); onIssues(p => [...p, row]); setReport({ reported_on: isoToday, problem: "", reported_by: "" }); }
+    catch (e) { alert("Save failed: " + e.message); }
+    finally { setSaving(false); }
+  };
+  const markFixed = async () => {
+    const cost = fixing.cost === "" ? null : Number(fixing.cost);
+    if (cost != null && !(cost >= 0)) return alert("The cost doesn't look like a number.");
+    const patch = { status: "fixed", fixed_on: fixing.fixed_on || isoToday, fix_notes: fixing.fix_notes.trim() || null, cost };
+    try { await sb.update("mtb_issues", fixing.id, patch); onIssues(p => p.map(i => i.id === fixing.id ? { ...i, ...patch } : i)); setFixing(null); }
+    catch (e) { alert("Save failed: " + e.message); }
+  };
+  const reopen = async i => {
+    const patch = { status: "open", fixed_on: null };
+    try { await sb.update("mtb_issues", i.id, patch); onIssues(p => p.map(x => x.id === i.id ? { ...x, ...patch } : x)); }
+    catch (e) { alert("Error: " + e.message); }
+  };
+  const removeIssue = async i => {
+    if (!window.confirm(`Delete the problem "${i.problem}" (${i.reported_on})?`)) return;
+    try { await sb.delete("mtb_issues", i.id); onIssues(p => p.filter(x => x.id !== i.id)); }
+    catch (e) { alert("Error: " + e.message); }
+  };
+  const saveDetails = async () => {
+    if (!details.code.trim()) return alert("The bike needs a number / name.");
+    const patch = { code: details.code.trim(), make_model: details.make_model.trim() || null, frame_size: details.frame_size.trim() || null,
+      serial_number: details.serial_number.trim() || null, purchase_date: details.purchase_date || null, notes: details.notes.trim() || null };
+    try { await sb.update("mtb_bikes", bike.id, patch); onBike({ ...bike, ...patch }); }
+    catch (e) { alert("Save failed: " + e.message); }
+  };
+  const setActive = async active => {
+    if (!active && !window.confirm(`Retire ${bike.code}? It leaves the list (tick “Show retired” to see it); its problem history stays.`)) return;
+    try { await sb.update("mtb_bikes", bike.id, { active }); onBike({ ...bike, active }); }
+    catch (e) { alert("Error: " + e.message); }
+  };
+
+  const meta = (<>
+    <span>{[bike.make_model, bike.frame_size && `size ${bike.frame_size}`, bike.serial_number && `serial ${bike.serial_number}`].filter(Boolean).join(" · ") || "No details yet"}</span>
+    {bike.active === false ? <span className="badge badge-neu">Retired</span> : s.open ? <span className="badge badge-warn">{s.open} open</span> : <span className="badge badge-ok">Ready</span>}
+  </>);
+  return (
+    <Drawer title={bike.code} meta={meta} tabs={BIKE_TABS.map(t => t.id === "problems" ? { ...t, count: issues.length } : t)} tab={tab} onTab={setTab} onClose={onClose}
+      footer={<button className="btn btn-ghost" onClick={onClose}>Close</button>}>
+      {tab === "problems" && (<>
+        <div className="drawer-sect">Report a problem</div>
+        <div className="grid2">
+          <div className="field"><label>Date</label><input type="date" max={isoToday} value={report.reported_on} onChange={e => setReport(r => ({ ...r, reported_on: e.target.value }))}/></div>
+          <div className="field"><label>Reported by</label><input type="text" placeholder="guide, guest, staff" value={report.reported_by} onChange={e => setReport(r => ({ ...r, reported_by: e.target.value }))}/></div>
+        </div>
+        <div className="field"><label>Problem</label><input type="text" placeholder="e.g. rear brake soft, chain skips in low gears" value={report.problem} onChange={e => setReport(r => ({ ...r, problem: e.target.value }))} onKeyDown={e => { if (e.key === "Enter") logProblem(); }}/></div>
+        <button className="btn btn-primary" disabled={saving} onClick={logProblem}>{saving ? "Saving…" : "Log problem"}</button>
+
+        {repeats.length > 0 && (
+          <div className="drawer-note" style={{marginTop:14}}>Keeps coming back: {repeats.map(r => `“${r.text}” ×${r.n}`).join(", ")}.</div>
+        )}
+
+        <div className="drawer-sect" style={{marginTop:18}}>History · {s.problems} problem{s.problems === 1 ? "" : "s"}{s.spend ? ` · ${fmtR(s.spend)} spent` : ""}</div>
+        {list.length === 0 && <div className="empty">No problems logged for this bike.</div>}
+        {list.map(i => (
+          <div key={i.id} style={{borderBottom:`1px solid ${T.border}`,padding:"10px 0"}}>
+            <div style={{display:"flex",gap:8,alignItems:"baseline",flexWrap:"wrap"}}>
+              {i.status === "fixed" ? <span className="badge badge-ok">Fixed</span> : <span className="badge badge-warn">Open</span>}
+              <b>{i.problem}</b>
+              <span style={{fontSize:12,color:T.muted}}>reported {i.reported_on}{i.reported_by ? ` by ${i.reported_by}` : ""}</span>
+            </div>
+            {i.status === "fixed" && (
+              <div style={{fontSize:12,color:T.muted,marginTop:4}}>Fixed {i.fixed_on || "—"}{i.fix_notes ? ` — ${i.fix_notes}` : ""}{i.cost ? ` · ${fmtR(i.cost)}` : ""}</div>
+            )}
+            {fixing?.id === i.id ? (
+              <div style={{marginTop:8}}>
+                <div className="grid3">
+                  <div className="field"><label>Fixed on</label><input type="date" max={isoToday} value={fixing.fixed_on} onChange={e => setFixing(f => ({ ...f, fixed_on: e.target.value }))}/></div>
+                  <div className="field"><label>Cost (R)</label><input type="number" inputMode="decimal" min="0" value={fixing.cost} onChange={e => setFixing(f => ({ ...f, cost: e.target.value }))}/></div>
+                  <div className="field"><label>What was done</label><input type="text" value={fixing.fix_notes} onChange={e => setFixing(f => ({ ...f, fix_notes: e.target.value }))}/></div>
+                </div>
+                <div style={{display:"flex",gap:8}}>
+                  <button className="btn btn-primary btn-sm" onClick={markFixed}>Mark fixed</button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setFixing(null)}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <div style={{display:"flex",gap:6,marginTop:6}}>
+                {i.status !== "fixed"
+                  ? <button className="btn btn-ghost btn-sm" onClick={() => setFixing({ id: i.id, fixed_on: isoToday, fix_notes: "", cost: "" })}>Mark fixed…</button>
+                  : <button className="btn btn-ghost btn-sm" onClick={() => reopen(i)}>Reopen</button>}
+                {isAdmin && <button className="btn btn-danger btn-sm" onClick={() => removeIssue(i)}>x</button>}
+              </div>
+            )}
+          </div>
+        ))}
+      </>)}
+      {tab === "details" && (<>
+        <BikeFields value={details} onChange={setDetails} disabled={!isAdmin}/>
+        {isAdmin ? (
+          <div style={{display:"flex",gap:8}}>
+            <button className="btn btn-primary" onClick={saveDetails}>Save details</button>
+            {bike.active === false
+              ? <button className="btn btn-ghost" onClick={() => setActive(true)}>Bring back into use</button>
+              : <button className="btn btn-ghost" onClick={() => setActive(false)}>Retire bike</button>}
+          </div>
+        ) : <div className="help">Only an admin can change a bike's details.</div>}
+      </>)}
+    </Drawer>
+  );
 }
 
 // Type-to-search dropdown (2026-08-25) — same value/onChange contract as a
@@ -5081,6 +5468,8 @@ const PAGES=[
   {id:"count",       label:"Stock Count",  section:"Stock",      adminOnly:false},
   {id:"orders",      label:"Orders",       section:"Stock",      adminOnly:false},
   {id:"destcosts",   label:"Destination Costs", section:"Stock", adminOnly:false},
+  {id:"mtb",         label:"MTB",          section:"Assets",     adminOnly:false},
+  {id:"rainfall",    label:"Rainfall",     section:"Assets",     adminOnly:false},
   {id:"billing",     label:"Internal Billing", section:"Management", adminOnly:true},
   {id:"items",       label:"Stock Items",  section:"Management", adminOnly:true},
   {id:"destinations",label:"Destinations", section:"Management", adminOnly:true},
@@ -5346,6 +5735,10 @@ function AuthenticatedApp() {
     return {...d,destinations:{...d.destinations,[locId]:updated}};
   });
 
+  // Android back button → home (#555): Dashboard for admins; staff are sent
+  // from the Dashboard to Purchases (see the effect above), so that is theirs.
+  useBackToHome({ page, setPage, home: isAdmin ? "dashboard" : "purchases" });
+
   if (companyLoading) {
     return (
       <AuthMessageScreen>
@@ -5559,6 +5952,8 @@ function AuthenticatedApp() {
                                        jobMaterials={jobMaterials} setJobMaterials={setJobMaterials} companyId={companyId} hrEmployees={hrEmployees}/>}
           {page==="items"        && isAdmin && <StockItems locId={locId} items={items} setItems={setItems} companyId={companyId}/>}
           {page==="destinations" && isAdmin && <Destinations locId={locId} destinations={allDests} setDestinations={setDestinations} companyId={companyId}/>}
+          {page==="mtb"          && <MtbPage locId={locId} companyId={companyId} isAdmin={isAdmin}/>}
+          {page==="rainfall"     && <RainfallPage locId={locId} companyId={companyId}/>}
         </div>
       </div>
 
