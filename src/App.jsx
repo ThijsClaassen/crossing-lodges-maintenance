@@ -18,7 +18,7 @@ import { wholeLine, validateSplits, planWrites, proRata } from "./splitLines.js"
 import { jobCostBreakdown, invoiceTotalDisagrees } from "./jobCosting.js";
 import { missingOccurrences, nextDueOnCompletion, nextDueFromOpenJobs, describeGeneration } from "./recurrence.js";
 import { todayIso } from './dates.js'
-import { MONTHS, monthlyGrid, rainSummary, existingReading, bikeSummary, sortBikes, repeatProblems } from './rainMtb.js'
+import { MONTHS, lodgeRain, lodgeYear, rainSummary, existingReading, bikeSummary, sortBikes, repeatProblems, jobFromProblem } from './rainMtb.js'
 
 const fmtR  = n=>`R ${Number(n||0).toLocaleString("en-ZA",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 const fmtN  = n=>Number(n||0).toLocaleString("en-ZA",{maximumFractionDigits:3});
@@ -557,51 +557,69 @@ function Destinations({ locId, destinations, setDestinations, companyId }) {
 }
 
 // ─── RAINFALL (#553, 2026-10-04) ─────────────────────────────────────────────
-// Thijs: "add a section where we save rain fall." One reading per lodge per
-// day (mm); logging the same lodge and day again corrects it. Totals by month
+// Thijs: "add a section where we save rain fall." and "I want to be able to
+// add different rain meters. We have 3 meters on 1 farm." Each lodge has its
+// own meters (admins add them); one reading per meter per day — logging the
+// same meter and day again corrects it. The lodge figure is the average of
+// its meters. Totals by month
 // per lodge for a year, plus this month / year to date / rain season (Jul–Jun)
 // against the same span last year. Loads its own rows, so the app's big
 // loader is untouched. Maths in rainMtb.js.
-function RainfallPage({ locId, companyId }) {
+function RainfallPage({ locId, companyId, isAdmin }) {
   const [rows, setRows] = useState(null);
+  const [gauges, setGauges] = useState([]);
   const [err, setErr] = useState("");
   const isoToday = todayIso();
   const [year, setYear] = useState(Number(isoToday.slice(0, 4)));
-  const blank = () => ({ reading_date: isoToday, location_id: locId, mm: "", notes: "", recorded_by: "" });
   const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [meterForm, setMeterForm] = useState(null);   // { id?, name, notes }
 
   const load = useCallback(async () => {
     if (!companyId) return;
-    try { setRows(await sb.select("maint_rainfall", `company_id=eq.${companyId}`)); setErr(""); }
-    catch (e) { setRows([]); setErr(/maint_rainfall/.test(e.message) ? "The rainfall table isn't set up yet — run add_rainfall_and_mtb.sql." : e.message); }
+    try {
+      const cf = `company_id=eq.${companyId}`;
+      const [r, g] = await Promise.all([sb.select("maint_rainfall", cf), sb.select("maint_rain_gauges", cf)]);
+      setRows(r); setGauges(g); setErr("");
+    } catch (e) { setRows([]); setErr(/maint_rain/.test(e.message) ? "The rainfall tables aren't set up yet — run add_rainfall_and_mtb.sql." : e.message); }
   }, [companyId]);
   useEffect(() => { load(); }, [load]);
 
-  const lodges = LOCATIONS;
-  const locName = id => lodges.find(l => l.id === id)?.name || id;
+  const locName = id => LOCATIONS.find(l => l.id === id)?.name || id;
   const all = rows || [];
-  const summary = rainSummary(all, { today: isoToday, locId });
-  const grid = monthlyGrid(all, year, lodges.map(l => l.id));
-  const lastYear = monthlyGrid(all, year - 1, lodges.map(l => l.id));
-  const years = [...new Set([Number(isoToday.slice(0, 4)), ...all.map(r => Number(String(r.reading_date).slice(0, 4)))])].sort((a, b) => b - a);
-  const recent = [...all].sort((a, b) => String(b.reading_date).localeCompare(String(a.reading_date))).slice(0, 30);
-  const mmFmt = n => (Math.round((Number(n) || 0) * 10) / 10).toLocaleString("en-ZA");
-  const vsLast = (now, then) => then > 0 ? ` · last year ${mmFmt(then)} mm` : "";
+  // Meters at this lodge (active first), plus a "no meter" column only if
+  // readings from before meters existed are still here.
+  const lodgeMeters = gauges.filter(g => g.location_id === locId && g.active !== false);
+  const hasLegacy = all.some(r => r.location_id === locId && !r.gauge_id);
+  const meterCols = [...lodgeMeters.map(g => ({ key: g.id, label: g.name })), ...(hasLegacy ? [{ key: `lodge:${locId}`, label: "Before meters" }] : [])];
+  const meterName = r => r.gauge_id ? (gauges.find(g => g.id === r.gauge_id)?.name || "Meter") : "—";
 
+  const summary = rainSummary(all, { today: isoToday, locId });
+  const thisYear = lodgeYear(all, locId, year, meterCols.map(c => c.key));
+  const lastYear = lodgeYear(all, locId, year - 1, []);
+  const years = [...new Set([Number(isoToday.slice(0, 4)), ...all.map(r => Number(String(r.reading_date).slice(0, 4)))])].sort((a, b) => b - a);
+  const recent = all.filter(r => r.location_id === locId).sort((a, b) => String(b.reading_date).localeCompare(String(a.reading_date)) || String(b.created_at || "").localeCompare(String(a.created_at || ""))).slice(0, 30);
+  const mmFmt = n => (Math.round((Number(n) || 0) * 10) / 10).toLocaleString("en-ZA");
+  const vsLast = then => then > 0 ? `last year ${mmFmt(then)} mm` : "";
+  // Every lodge's rain this month, for the strip at the bottom.
+  const monthFrom = `${isoToday.slice(0, 7)}-01`;
+
+  const openLog = () => setForm({ reading_date: isoToday, gauge_id: lodgeMeters[0]?.id || "", mm: "", notes: "", recorded_by: "" });
   const save = async () => {
     const mm = parseFloat(form.mm);
-    if (!form.reading_date || !form.location_id) return alert("Pick a date and a lodge.");
+    if (!form.reading_date) return alert("Pick a date.");
+    if (!form.gauge_id && !existingReading(all, { gauge_id: null, location_id: locId, reading_date: form.reading_date })) return alert("Pick the rain meter.");
     if (!(mm >= 0)) return alert("Enter the rain in mm (0 is fine for a dry gauge check).");
     setSaving(true);
     try {
-      const existing = existingReading(all, form);
+      const key = { gauge_id: form.gauge_id || null, location_id: locId, reading_date: form.reading_date };
+      const existing = existingReading(all, key);
       const patch = { mm, notes: form.notes.trim() || null, recorded_by: form.recorded_by.trim() || null };
       if (existing) {
         await sb.update("maint_rainfall", existing.id, patch);
         setRows(p => p.map(r => r.id === existing.id ? { ...r, ...patch } : r));
       } else {
-        const row = { id: uid(), company_id: companyId, location_id: form.location_id, reading_date: form.reading_date, ...patch };
+        const row = { id: uid(), company_id: companyId, ...key, ...patch };
         await sb.insert("maint_rainfall", row);
         setRows(p => [...(p || []), row]);
       }
@@ -610,69 +628,117 @@ function RainfallPage({ locId, companyId }) {
     finally { setSaving(false); }
   };
   const remove = async r => {
-    if (!window.confirm(`Delete ${mmFmt(r.mm)} mm on ${r.reading_date} at ${locName(r.location_id)}?`)) return;
+    if (!window.confirm(`Delete ${mmFmt(r.mm)} mm on ${r.reading_date} (${meterName(r)})?`)) return;
     try { await sb.delete("maint_rainfall", r.id); setRows(p => p.filter(x => x.id !== r.id)); }
     catch (e) { alert("Error: " + e.message); }
   };
-  const existingForForm = form ? existingReading(all, form) : null;
+  const saveMeter = async () => {
+    const name = meterForm.name.trim();
+    if (!name) return alert("Give the meter a name, e.g. Homestead or Dam wall.");
+    try {
+      if (meterForm.id) {
+        await sb.update("maint_rain_gauges", meterForm.id, { name, notes: meterForm.notes.trim() || null });
+        setGauges(p => p.map(g => g.id === meterForm.id ? { ...g, name, notes: meterForm.notes.trim() || null } : g));
+      } else {
+        const row = { id: uid(), company_id: companyId, location_id: locId, name, notes: meterForm.notes.trim() || null, active: true };
+        await sb.insert("maint_rain_gauges", row);
+        setGauges(p => [...p, row]);
+      }
+      setMeterForm(null);
+    } catch (e) { alert("Save failed: " + e.message); }
+  };
+  const retireMeter = async g => {
+    if (!window.confirm(`Stop using the "${g.name}" meter? Its readings stay in the history.`)) return;
+    try { await sb.update("maint_rain_gauges", g.id, { active: false }); setGauges(p => p.map(x => x.id === g.id ? { ...x, active: false } : x)); }
+    catch (e) { alert("Error: " + e.message); }
+  };
+  const existingForForm = form ? existingReading(all, { gauge_id: form.gauge_id || null, location_id: locId, reading_date: form.reading_date }) : null;
 
   return (<>
     <div className="strip">
       <div className="strip-item"><div className="strip-label">This month — {locName(locId)}</div><div className="strip-val">{mmFmt(summary.month)} mm</div></div>
       <div className="strip-item"><div className="strip-label">Year to date</div><div className="strip-val">{mmFmt(summary.yearToDate)} mm</div>
-        <div style={{fontSize:10,color:T.muted,marginTop:2}}>{vsLast(summary.yearToDate, summary.yearToDateLastYear).replace(/^ · /, "") || "nothing logged last year"}</div></div>
+        <div style={{fontSize:10,color:T.muted,marginTop:2}}>{vsLast(summary.yearToDateLastYear) || "nothing logged last year"}</div></div>
       <div className="strip-item"><div className="strip-label">Season {summary.seasonLabel} (from 1 Jul)</div><div className="strip-val">{mmFmt(summary.season)} mm</div>
-        <div style={{fontSize:10,color:T.muted,marginTop:2}}>{vsLast(summary.season, summary.seasonLastYear).replace(/^ · /, "") || "nothing logged last season"}</div></div>
+        <div style={{fontSize:10,color:T.muted,marginTop:2}}>{vsLast(summary.seasonLastYear) || "nothing logged last season"}</div></div>
       <div className="strip-item"><div className="strip-label">Last rain</div><div className="strip-val">{summary.lastRain || "—"}</div></div>
-      <div style={{marginLeft:"auto"}}><button className="btn btn-primary" onClick={() => setForm(blank())}>+ Log rain</button></div>
+      <div style={{marginLeft:"auto",display:"flex",gap:8}}>
+        {isAdmin && <button className="btn btn-ghost" onClick={() => setMeterForm({ name: "", notes: "" })}>+ Add meter</button>}
+        <button className="btn btn-primary" onClick={openLog} disabled={!lodgeMeters.length} title={lodgeMeters.length ? undefined : "Add a rain meter for this lodge first"}>+ Log rain</button>
+      </div>
     </div>
     {err && <div className="info-box" style={{color:T.danger}}>{err}</div>}
     {rows === null && <div className="empty">Loading…</div>}
+    {rows !== null && lodgeMeters.length === 0 && (
+      <div className="info-box" style={{display:"block",marginBottom:14}}>
+        No rain meters at {locName(locId)} yet. {isAdmin ? "Add one with “+ Add meter” — one per gauge on the property (e.g. Homestead, North camp, Dam wall)." : "Ask an admin to add the meters for this lodge."}
+      </div>
+    )}
 
     {rows !== null && (<>
+      {lodgeMeters.length > 0 && (
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",margin:"0 0 12px"}}>
+          {lodgeMeters.map(g => (
+            <span key={g.id} className="badge badge-neu" style={{display:"inline-flex",gap:6,alignItems:"center"}}>
+              {g.name}
+              {isAdmin && <button className="btn btn-ghost btn-sm" style={{padding:"0 6px"}} onClick={() => setMeterForm({ id: g.id, name: g.name, notes: g.notes || "" })}>Rename</button>}
+              {isAdmin && <button className="btn btn-ghost btn-sm" style={{padding:"0 6px"}} onClick={() => retireMeter(g)}>Stop</button>}
+            </span>
+          ))}
+        </div>
+      )}
+
       <div style={{display:"flex",alignItems:"center",gap:10,margin:"6px 0 10px"}}>
-        <div className="section-title" style={{margin:0}}>Rain per month (mm)</div>
+        <div className="section-title" style={{margin:0}}>Rain per month at {locName(locId)} (mm)</div>
         <select value={year} onChange={e => setYear(Number(e.target.value))} style={{marginLeft:"auto"}}>
           {years.map(y => <option key={y} value={y}>{y}</option>)}
         </select>
       </div>
       <div className="tbl-wrap"><table className="tbl">
-        <thead><tr><th>Month</th>{lodges.map(l => <th key={l.id} className="num">{l.name || l.id}</th>)}<th className="num">All lodges</th><th className="num">Last year</th></tr></thead>
+        <thead><tr><th>Month</th>{meterCols.map(c => <th key={c.key} className="num">{c.label}</th>)}<th className="num">{locName(locId)}</th><th className="num">Last year</th></tr></thead>
         <tbody>
           {MONTHS.map((m, i) => (
             <tr key={m}>
               <td>{m}</td>
-              {lodges.map(l => <td key={l.id} className="num mono">{grid[l.id][i] ? mmFmt(grid[l.id][i]) : "—"}</td>)}
-              <td className="num mono" style={{fontWeight:600}}>{grid.total[i] ? mmFmt(grid.total[i]) : "—"}</td>
-              <td className="num mono" style={{color:T.muted}}>{lastYear.total[i] ? mmFmt(lastYear.total[i]) : "—"}</td>
+              {meterCols.map(c => <td key={c.key} className="num mono">{thisYear.gauges[c.key][i] ? mmFmt(thisYear.gauges[c.key][i]) : "—"}</td>)}
+              <td className="num mono" style={{fontWeight:600}} title={thisYear.meters[i] > 1 ? `Average of ${thisYear.meters[i]} meters` : undefined}>{thisYear.lodge[i] ? mmFmt(thisYear.lodge[i]) : "—"}</td>
+              <td className="num mono" style={{color:T.muted}}>{lastYear.lodge[i] ? mmFmt(lastYear.lodge[i]) : "—"}</td>
             </tr>
           ))}
         </tbody>
         <tfoot><tr>
           <th>Total {year}</th>
-          {lodges.map(l => <th key={l.id} className="num mono">{mmFmt(grid[l.id].reduce((s, x) => s + x, 0))}</th>)}
-          <th className="num mono">{mmFmt(grid.total.reduce((s, x) => s + x, 0))}</th>
-          <th className="num mono" style={{color:T.muted}}>{mmFmt(lastYear.total.reduce((s, x) => s + x, 0))}</th>
+          {meterCols.map(c => <th key={c.key} className="num mono">{mmFmt(thisYear.gauges[c.key].reduce((s, x) => s + x, 0))}</th>)}
+          <th className="num mono">{mmFmt(thisYear.lodge.reduce((s, x) => s + x, 0))}</th>
+          <th className="num mono" style={{color:T.muted}}>{mmFmt(lastYear.lodge.reduce((s, x) => s + x, 0))}</th>
         </tr></tfoot>
       </table></div>
-      <div style={{fontSize:11,color:T.muted,margin:"6px 0 18px"}}>"All lodges" adds the lodges' gauges together; read a single lodge's column for what fell there.</div>
+      <div style={{fontSize:11,color:T.muted,margin:"6px 0 18px"}}>
+        The {locName(locId)} column is the average of its meters (three meters at 10 mm = 10 mm of rain, not 30). Only meters read that month count, so a new meter does not pull the average down.
+      </div>
 
-      <div className="section-title">Latest readings</div>
+      {LOCATIONS.length > 1 && (
+        <div style={{fontSize:12,color:T.muted,margin:"0 0 18px"}}>
+          This month elsewhere: {LOCATIONS.filter(l => l.id !== locId).map(l => `${l.name || l.id} ${mmFmt(lodgeRain(all, l.id, monthFrom, isoToday).mm)} mm`).join(" · ")}
+        </div>
+      )}
+
+      <div className="section-title">Latest readings at {locName(locId)}</div>
       <div className="tbl-wrap"><table className="tbl">
-        <thead><tr><th>Date</th><th>Lodge</th><th className="num">mm</th><th>Notes</th><th>By</th><th></th></tr></thead>
+        <thead><tr><th>Date</th><th>Meter</th><th className="num">mm</th><th>Notes</th><th>By</th><th></th></tr></thead>
         <tbody>
           {recent.map(r => (
             <tr key={r.id}>
-              <td className="mono">{r.reading_date}</td><td>{locName(r.location_id)}</td>
+              <td className="mono">{r.reading_date}</td><td>{meterName(r)}</td>
               <td className="num mono" style={{fontWeight:600}}>{mmFmt(r.mm)}</td>
               <td style={{color:T.muted}}>{r.notes || "—"}</td><td style={{color:T.muted}}>{r.recorded_by || "—"}</td>
               <td style={{display:"flex",gap:5}}>
-                <button className="btn btn-ghost btn-sm" onClick={() => setForm({ reading_date: r.reading_date, location_id: r.location_id, mm: String(r.mm), notes: r.notes || "", recorded_by: r.recorded_by || "" })}>Edit</button>
+                <button className="btn btn-ghost btn-sm" onClick={() => setForm({ reading_date: r.reading_date, gauge_id: r.gauge_id || "", mm: String(r.mm), notes: r.notes || "", recorded_by: r.recorded_by || "" })}>Edit</button>
                 <button className="btn btn-danger btn-sm" onClick={() => remove(r)}>x</button>
               </td>
             </tr>
           ))}
-          {recent.length === 0 && <tr><td colSpan={6} className="empty">No rain logged yet. Use “+ Log rain” after reading the gauge.</td></tr>}
+          {recent.length === 0 && <tr><td colSpan={6} className="empty">No rain logged here yet. Use “+ Log rain” after reading a meter.</td></tr>}
         </tbody>
       </table></div>
     </>)}
@@ -680,12 +746,13 @@ function RainfallPage({ locId, companyId }) {
     {form && (
       <div className="overlay" onClick={e => e.target === e.currentTarget && setForm(null)}>
         <div className="modal" style={{maxWidth:420}}>
-          <div className="modal-title">Log <span>Rain</span></div>
+          <div className="modal-title">Log <span>Rain</span> — {locName(locId)}</div>
           <div className="grid2">
             <div className="field"><label>Date</label><input type="date" value={form.reading_date} max={isoToday} onChange={e => setForm(f => ({ ...f, reading_date: e.target.value }))}/></div>
-            <div className="field"><label>Lodge</label>
-              <select value={form.location_id} onChange={e => setForm(f => ({ ...f, location_id: e.target.value }))}>
-                {lodges.map(l => <option key={l.id} value={l.id}>{l.name || l.id}</option>)}
+            <div className="field"><label>Rain meter</label>
+              <select value={form.gauge_id} onChange={e => setForm(f => ({ ...f, gauge_id: e.target.value }))}>
+                {lodgeMeters.length === 0 && <option value="">(no meters yet)</option>}
+                {lodgeMeters.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
               </select>
             </div>
           </div>
@@ -694,10 +761,24 @@ function RainfallPage({ locId, companyId }) {
             <div className="field"><label>Notes</label><input type="text" placeholder="e.g. hail, storm overnight" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}/></div>
             <div className="field"><label>Read by</label><input type="text" value={form.recorded_by} onChange={e => setForm(f => ({ ...f, recorded_by: e.target.value }))}/></div>
           </div>
-          {existingForForm && <div style={{fontSize:12,color:T.warn,marginBottom:10}}>{mmFmt(existingForForm.mm)} mm is already logged for this lodge and day — saving replaces it.</div>}
+          {existingForForm && <div style={{fontSize:12,color:T.warn,marginBottom:10}}>{mmFmt(existingForForm.mm)} mm is already logged for this meter and day — saving replaces it.</div>}
           <div style={{display:"flex",gap:9}}>
             <button className="btn btn-primary" disabled={saving} onClick={save}>{saving ? "Saving…" : existingForForm ? "Replace reading" : "Save"}</button>
             <button className="btn btn-ghost" onClick={() => setForm(null)}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {meterForm && (
+      <div className="overlay" onClick={e => e.target === e.currentTarget && setMeterForm(null)}>
+        <div className="modal" style={{maxWidth:400}}>
+          <div className="modal-title">{meterForm.id ? "Rename" : "Add"} <span>Rain meter</span> — {locName(locId)}</div>
+          <div className="field"><label>Name</label><input type="text" autoFocus placeholder="e.g. Homestead, North camp, Dam wall" value={meterForm.name} onChange={e => setMeterForm(f => ({ ...f, name: e.target.value }))}/></div>
+          <div className="field"><label>Notes</label><input type="text" placeholder="where it stands, type of gauge" value={meterForm.notes} onChange={e => setMeterForm(f => ({ ...f, notes: e.target.value }))}/></div>
+          <div style={{display:"flex",gap:9}}>
+            <button className="btn btn-primary" onClick={saveMeter}>Save</button>
+            <button className="btn btn-ghost" onClick={() => setMeterForm(null)}>Cancel</button>
           </div>
         </div>
       </div>
@@ -707,13 +788,17 @@ function RainfallPage({ locId, companyId }) {
 
 // ─── MTB (#556, 2026-10-04) ──────────────────────────────────────────────────
 // Thijs: "MTB section … where we can keep track of problems per mountain
-// bike." A register of the bikes per lodge and a problem log per bike:
-// reported → fixed (date, what was done, cost). Bikes with open problems sit
-// at the top. Anyone can log a problem or mark it fixed; adding, editing or
+// bike." and "MTB, must also be linked to the stock and calendar. Link MTB's
+// to jobcard when work is being done on MTB's." A register of the bikes per
+// lodge and a problem log per bike. A problem becomes a JOB CARD with one
+// click: it lands on the calendar, its parts go out of stock through the job
+// card's materials like any other job, and completing the job closes the
+// problem with the job's cost (labour + stock). Small fixes can still be
+// marked fixed by hand. Anyone can log and fix problems; adding, editing or
 // retiring a bike is for admins. Maths in rainMtb.js.
 const BLANK_BIKE = () => ({ code: "", make_model: "", frame_size: "", serial_number: "", purchase_date: "", notes: "" });
 
-function MtbPage({ locId, companyId, isAdmin }) {
+function MtbPage({ locId, companyId, isAdmin, jobs = [], setJobs, jobInvoices = [] }) {
   const [bikes, setBikes] = useState(null);
   const [issues, setIssues] = useState([]);
   const [err, setErr] = useState("");
@@ -732,7 +817,9 @@ function MtbPage({ locId, companyId, isAdmin }) {
   useEffect(() => { load(); }, [load]);
 
   const here = (bikes || []).filter(b => b.location_id === locId && (showRetired || b.active !== false));
-  const sorted = sortBikes(here, issues);
+  const jobCosts = useMemo(() => Object.fromEntries((jobInvoices || []).map(i => [i.job_id, Number(i.total_cost) || 0])), [jobInvoices]);
+  const bikeJobs = (jobs || []).filter(j => j.mtb_bike_id);
+  const sorted = sortBikes(here, issues, { jobs: bikeJobs, jobCosts });
   const openProblems = issues.filter(i => i.status !== "fixed" && here.some(b => b.id === i.bike_id)).length;
   const yearSpend = issues.filter(i => here.some(b => b.id === i.bike_id) && String(i.fixed_on || i.reported_on || "").slice(0, 4) === todayIso().slice(0, 4))
     .reduce((s, i) => s + (Number(i.cost) || 0), 0);
@@ -764,7 +851,7 @@ function MtbPage({ locId, companyId, isAdmin }) {
     {bikes === null && <div className="empty">Loading…</div>}
     {bikes !== null && (
       <div className="tbl-wrap"><table className="tbl">
-        <thead><tr><th>Bike</th><th>Status</th><th>Latest problem</th><th className="num">Problems</th><th className="num">Spend</th><th></th></tr></thead>
+        <thead><tr><th>Bike</th><th>Status</th><th>Latest problem</th><th className="num">Problems</th><th className="num">Job cards</th><th className="num">Spend</th><th></th></tr></thead>
         <tbody>
           {sorted.map(({ bike: b, s }) => (
             <tr key={b.id} style={{cursor:"pointer",opacity: b.active === false ? .55 : 1}} onClick={() => setOpenId(b.id)}>
@@ -774,11 +861,12 @@ function MtbPage({ locId, companyId, isAdmin }) {
                 : <span className="badge badge-ok">Ready</span>}</td>
               <td style={{color:T.muted}}>{s.latest ? `${s.latest.reported_on} — ${s.latest.problem}` : "—"}</td>
               <td className="num mono">{s.problems}</td>
+              <td className="num mono">{s.jobs || "—"}</td>
               <td className="num mono">{s.spend ? fmtR(s.spend) : "—"}</td>
               <td><button className="btn btn-ghost btn-sm" onClick={e => { e.stopPropagation(); setOpenId(b.id); }}>Open</button></td>
             </tr>
           ))}
-          {sorted.length === 0 && <tr><td colSpan={6} className="empty">{isAdmin ? "No bikes yet at this lodge — add them with “+ Add bike”." : "No bikes registered at this lodge yet — ask an admin to add them."}</td></tr>}
+          {sorted.length === 0 && <tr><td colSpan={7} className="empty">{isAdmin ? "No bikes yet at this lodge — add them with “+ Add bike”." : "No bikes registered at this lodge yet — ask an admin to add them."}</td></tr>}
         </tbody>
       </table></div>
     )}
@@ -798,6 +886,8 @@ function MtbPage({ locId, companyId, isAdmin }) {
 
     {openBike && (
       <BikeDrawer key={openBike.id} bike={openBike} issues={issues.filter(i => i.bike_id === openBike.id)} companyId={companyId} isAdmin={isAdmin}
+        jobs={bikeJobs.filter(j => j.mtb_bike_id === openBike.id)} jobCosts={jobCosts}
+        onJobCreated={job => setJobs && setJobs(p => [...p, job])}
         onClose={() => setOpenId(null)}
         onBike={row => setBikes(p => p.map(b => b.id === row.id ? row : b))}
         onIssues={fn => setIssues(fn)}/>
@@ -819,16 +909,39 @@ function BikeFields({ value, onChange, disabled }) {
   </>);
 }
 
-const BIKE_TABS = [{ id: "problems", label: "Problems" }, { id: "details", label: "Bike details" }];
+const BIKE_TABS = [{ id: "problems", label: "Problems" }, { id: "jobs", label: "Job cards" }, { id: "details", label: "Bike details" }];
+const JOB_STATUS_SHORT = { scheduled: "Open", in_progress: "In progress", completed: "Completed", cancelled: "Cancelled" };
 
-function BikeDrawer({ bike, issues, companyId, isAdmin, onClose, onBike, onIssues }) {
+function BikeDrawer({ bike, issues, companyId, isAdmin, jobs = [], jobCosts = {}, onJobCreated, onClose, onBike, onIssues }) {
   const [tab, setTab] = useState("problems");
   const isoToday = todayIso();
   const [report, setReport] = useState({ reported_on: isoToday, problem: "", reported_by: "" });
   const [fixing, setFixing] = useState(null);   // { id, fixed_on, fix_notes, cost }
   const [details, setDetails] = useState(() => Object.fromEntries(Object.entries(BLANK_BIKE()).map(([k]) => [k, bike[k] ?? ""])));
   const [saving, setSaving] = useState(false);
-  const s = bikeSummary(bike, issues);
+  const s = bikeSummary(bike, issues, { jobs, jobCosts });
+  const jobById = Object.fromEntries(jobs.map(j => [j.id, j]));
+  const [newWork, setNewWork] = useState("");
+  // One click from a problem to a job card on today's calendar (#556).
+  const createJobFor = async issue => {
+    const job = { ...jobFromProblem(bike, issue, { id: uid(), companyId, dueDMY: today() }) };
+    try {
+      await sb.insert("maint_jobs", job);
+      await sb.update("mtb_issues", issue.id, { job_id: job.id });
+      onJobCreated && onJobCreated(job);
+      onIssues(p => p.map(i => i.id === issue.id ? { ...i, job_id: job.id } : i));
+    } catch (e) { alert("Could not create the job card: " + e.message + (/mtb_/.test(e.message) ? "\nRun add_rainfall_and_mtb.sql first." : "")); }
+  };
+  // Planned work that is not a reported problem — a service, new tyres.
+  const createWorkJob = async () => {
+    const what = newWork.trim();
+    if (!what) return alert("Say what the work is, e.g. full service.");
+    const job = { id: uid(), company_id: companyId, location_id: bike.location_id, template_id: null,
+      name: `${bike.code}: ${what}`.slice(0, 120), description: bike.make_model || null, job_type: "preventive",
+      destination_id: null, dest_name: null, assigned_to: null, due_date: today(), status: "scheduled", mtb_bike_id: bike.id };
+    try { await sb.insert("maint_jobs", job); onJobCreated && onJobCreated(job); setNewWork(""); }
+    catch (e) { alert("Could not create the job card: " + e.message); }
+  };
   const repeats = repeatProblems(issues, bike.id);
   const list = [...issues].sort((a, b) => (a.status === "fixed") - (b.status === "fixed") || String(b.reported_on).localeCompare(String(a.reported_on)));
 
@@ -876,7 +989,7 @@ function BikeDrawer({ bike, issues, companyId, isAdmin, onClose, onBike, onIssue
     {bike.active === false ? <span className="badge badge-neu">Retired</span> : s.open ? <span className="badge badge-warn">{s.open} open</span> : <span className="badge badge-ok">Ready</span>}
   </>);
   return (
-    <Drawer title={bike.code} meta={meta} tabs={BIKE_TABS.map(t => t.id === "problems" ? { ...t, count: issues.length } : t)} tab={tab} onTab={setTab} onClose={onClose}
+    <Drawer title={bike.code} meta={meta} tabs={BIKE_TABS.map(t => t.id === "problems" ? { ...t, count: issues.length } : t.id === "jobs" ? { ...t, count: jobs.length } : t)} tab={tab} onTab={setTab} onClose={onClose}
       footer={<button className="btn btn-ghost" onClick={onClose}>Close</button>}>
       {tab === "problems" && (<>
         <div className="drawer-sect">Report a problem</div>
@@ -903,6 +1016,13 @@ function BikeDrawer({ bike, issues, companyId, isAdmin, onClose, onBike, onIssue
             {i.status === "fixed" && (
               <div style={{fontSize:12,color:T.muted,marginTop:4}}>Fixed {i.fixed_on || "—"}{i.fix_notes ? ` — ${i.fix_notes}` : ""}{i.cost ? ` · ${fmtR(i.cost)}` : ""}</div>
             )}
+            {i.job_id && (
+              <div style={{fontSize:12,marginTop:4}}>
+                <span className="badge badge-neu">Job card</span>{" "}
+                {jobById[i.job_id] ? `${jobById[i.job_id].name} · ${JOB_STATUS_SHORT[jobById[i.job_id].status] || jobById[i.job_id].status} · due ${jobById[i.job_id].due_date}` : "on the calendar"}
+                {i.status !== "fixed" && <span style={{color:T.muted}}> — completing the job card closes this problem with its cost.</span>}
+              </div>
+            )}
             {fixing?.id === i.id ? (
               <div style={{marginTop:8}}>
                 <div className="grid3">
@@ -917,6 +1037,7 @@ function BikeDrawer({ bike, issues, companyId, isAdmin, onClose, onBike, onIssue
               </div>
             ) : (
               <div style={{display:"flex",gap:6,marginTop:6}}>
+                {i.status !== "fixed" && !i.job_id && <button className="btn btn-primary btn-sm" onClick={() => createJobFor(i)}>Create job card</button>}
                 {i.status !== "fixed"
                   ? <button className="btn btn-ghost btn-sm" onClick={() => setFixing({ id: i.id, fixed_on: isoToday, fix_notes: "", cost: "" })}>Mark fixed…</button>
                   : <button className="btn btn-ghost btn-sm" onClick={() => reopen(i)}>Reopen</button>}
@@ -925,6 +1046,34 @@ function BikeDrawer({ bike, issues, companyId, isAdmin, onClose, onBike, onIssue
             )}
           </div>
         ))}
+      </>)}
+      {tab === "jobs" && (<>
+        <div className="drawer-note" style={{marginBottom:12}}>
+          Work on this bike runs on job cards: they show on the Calendar, parts are booked out of stock on the job card's
+          Materials, and completing it records labour and stock cost. Open a job from the Calendar to work on it.
+        </div>
+        <div className="drawer-sect">Plan work</div>
+        <div style={{display:"flex",gap:8,marginBottom:14}}>
+          <input type="text" style={{flex:1}} placeholder="e.g. full service, new tyres" value={newWork} onChange={e => setNewWork(e.target.value)} onKeyDown={e => { if (e.key === "Enter") createWorkJob(); }}/>
+          <button className="btn btn-primary" onClick={createWorkJob}>Create job card</button>
+        </div>
+        <div className="drawer-sect">Job cards · {jobs.length}</div>
+        {jobs.length === 0 && <div className="empty">No job cards for this bike yet.</div>}
+        {jobs.length > 0 && (
+          <div className="tbl-wrap"><table className="tbl">
+            <thead><tr><th>Job</th><th>Due</th><th>Status</th><th className="num">Cost</th></tr></thead>
+            <tbody>
+              {[...jobs].sort((a, b) => String(b.completed_date || b.due_date).localeCompare(String(a.completed_date || a.due_date))).map(j => (
+                <tr key={j.id}>
+                  <td>{j.name}{j.mtb_issue_id && <div style={{fontSize:11,color:T.muted}}>from a reported problem</div>}</td>
+                  <td className="mono">{j.completed_date || j.due_date}</td>
+                  <td><span className={`badge ${j.status === "completed" ? "badge-ok" : j.status === "cancelled" ? "badge-neu" : "badge-warn"}`}>{JOB_STATUS_SHORT[j.status] || j.status}</span></td>
+                  <td className="num mono">{jobCosts[j.id] ? fmtR(jobCosts[j.id]) : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+        )}
       </>)}
       {tab === "details" && (<>
         <BikeFields value={details} onChange={setDetails} disabled={!isAdmin}/>
@@ -2932,10 +3081,25 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates, hr
       // material cost back to whichever site/destination it was done for.
       // Uses the labor rows and stock issues we just built above, so no
       // extra fetch is needed. Never blocks completion on failure.
-      await generateJobInvoice({
+      const jobInvoice = await generateJobInvoice({
         job, laborInserts, materialLines: newIssues,
         items, purchases, companyId, completedDate: date,
       });
+
+      // 3a-bis. Work on a mountain bike (#556, 2026-10-04 — Thijs: "Link
+      // MTB's to jobcard when work is being done on MTB's"). The job card
+      // made from a bike problem closes that problem: fixed on the completion
+      // date, with the completion notes and the job's full cost (labour +
+      // stock used). Never blocks completion on failure.
+      if (job.mtb_issue_id) {
+        try {
+          await sb.update("mtb_issues", job.mtb_issue_id, {
+            status: "fixed", fixed_on: dmyToIso(date) || todayIso(),
+            fix_notes: notes || `Job card: ${job.name}`,
+            cost: jobInvoice ? jobInvoice.total_cost : null,
+          });
+        } catch(e) { console.error("Could not close the bike problem:", e); }
+      }
 
       // 3b. This job was auto-created for a self-serviced vehicle (Operations
       // app) — completing it here needs to feed the service date (and
@@ -3154,7 +3318,13 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates, hr
 // ─── AD-HOC JOB ──────────────────────────────────────────────────────────────
 function AdHocJob({ locId, items, destinations, setJobs, setJobMaterials, onClose, companyId, hrEmployees }) {
   const locDests = destinations.filter(d=>d.location_id===locId).sort((a,b)=>a.sort_order-b.sort_order);
-  const blank = {name:"",description:"",job_type:"reactive",destination_id:"",assigned_to:"",due_date:today()};
+  const blank = {name:"",description:"",job_type:"reactive",destination_id:"",assigned_to:"",due_date:today(),mtb_bike_id:""};
+  // Work on a mountain bike (#556): the job can be tagged to a bike, so it
+  // shows on that bike's history. Tolerant: no MTB tables yet = no picker.
+  const [bikes, setBikes] = useState([]);
+  useEffect(()=>{
+    sb.select("mtb_bikes", `company_id=eq.${companyId}&location_id=eq.${locId}&active=eq.true`).then(setBikes).catch(()=>setBikes([]));
+  },[companyId, locId]);
   const [form,setForm] = useState(blank);
   const [rows,setRows] = useState([]);   // {item_id, qty}
   const [busy,setBusy] = useState(false);
@@ -3165,12 +3335,17 @@ function AdHocJob({ locId, items, destinations, setJobs, setJobMaterials, onClos
     setBusy(true);
     try{
       const dest = locDests.find(d=>d.id===form.destination_id);
+      const bike = bikes.find(b=>b.id===form.mtb_bike_id);
+      // Named so the calendar says which bike: "MTB 07: new chain".
+      const name = bike && !form.name.trim().toLowerCase().includes(String(bike.code).toLowerCase())
+        ? `${bike.code}: ${form.name.trim()}` : form.name.trim();
       const job = {
-        id:uid(), location_id:locId, template_id:null, name:form.name.trim(),
+        id:uid(), location_id:locId, template_id:null, name,
         description:form.description||null, job_type:form.job_type,
         destination_id:form.destination_id||null, dest_name:dest?.name||null,
         assigned_to:form.assigned_to||null, due_date:form.due_date, status:"scheduled",
         company_id: companyId,
+        ...(bike ? { mtb_bike_id: bike.id } : {}),
       };
       await sb.insert("maint_jobs", job);
       setJobs(p=>[...p, job]);
@@ -3218,6 +3393,14 @@ function AdHocJob({ locId, items, destinations, setJobs, setJobMaterials, onClos
         <div className="field"><label>Assigned to</label>
           <AssignedToField hrEmployees={hrEmployees} value={form.assigned_to} onChange={v=>setForm(p=>({...p,assigned_to:v}))}/>
         </div>
+        {bikes.length>0 && (
+          <div className="field"><label>Mountain bike</label>
+            <select value={form.mtb_bike_id} onChange={f("mtb_bike_id")}>
+              <option value="">— not a bike —</option>
+              {[...bikes].sort((a,b)=>String(a.code).localeCompare(String(b.code),undefined,{numeric:true})).map(b=><option key={b.id} value={b.id}>{b.code}{b.make_model?` · ${b.make_model}`:""}</option>)}
+            </select>
+          </div>
+        )}
         <div className="field full"><label>Description</label>
           <textarea rows={3} value={form.description} onChange={f("description")}/>
         </div>
@@ -3709,8 +3892,10 @@ async function generateJobInvoice({ job, laborInserts, materialLines, items, pur
     for(const line of laborLines){
       await sb.insert("maint_job_invoice_labor_lines", { ...line, invoice_id: invoice.id });
     }
+    return invoice;   // the MTB link (#556) puts its total on the bike's problem
   }catch(e){
     console.error("Could not generate internal invoice for job", job.id, e);
+    return null;
   }
 }
 
@@ -5952,8 +6137,8 @@ function AuthenticatedApp() {
                                        jobMaterials={jobMaterials} setJobMaterials={setJobMaterials} companyId={companyId} hrEmployees={hrEmployees}/>}
           {page==="items"        && isAdmin && <StockItems locId={locId} items={items} setItems={setItems} companyId={companyId}/>}
           {page==="destinations" && isAdmin && <Destinations locId={locId} destinations={allDests} setDestinations={setDestinations} companyId={companyId}/>}
-          {page==="mtb"          && <MtbPage locId={locId} companyId={companyId} isAdmin={isAdmin}/>}
-          {page==="rainfall"     && <RainfallPage locId={locId} companyId={companyId}/>}
+          {page==="mtb"          && <MtbPage locId={locId} companyId={companyId} isAdmin={isAdmin} jobs={jobs} setJobs={setJobs} jobInvoices={jobInvoices}/>}
+          {page==="rainfall"     && <RainfallPage locId={locId} companyId={companyId} isAdmin={isAdmin}/>}
         </div>
       </div>
 
