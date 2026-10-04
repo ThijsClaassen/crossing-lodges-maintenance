@@ -427,6 +427,22 @@ export const css = `
   .role-badge{border-color:var(--sidebar-line);color:var(--sidebar-muted)}
   .bottom-nav,.nav-sheet{background:var(--sidebar-bg);color:var(--sidebar-text)}
   .nav-sheet-item.active{color:var(--accent-on-dark);background:var(--accent-on-dark-wash)}
+  /* PHONE MENU, READABLE OUTDOORS (2026-10-04). The rule above turned the
+     sheet navy, but the header stayed on the page panel (white in light mode)
+     and the items kept --cream, which is near-black in light mode — dark text
+     on navy, unreadable in sunlight. Thijs, phone photo: "The UX on the
+     phones are not good … the menu beam." Everything on the sheet now uses
+     the rail palette (#e8edf4 on #233348, about 11:1), with bigger tap rows. */
+  .nav-overlay{background:rgba(0,0,0,.7)}
+  .nav-sheet{border-color:var(--sidebar-line)}
+  .nav-sheet-header{background:var(--sidebar-bg);border-bottom:1px solid var(--sidebar-line)}
+  .nav-sheet-title{color:var(--sidebar-text)}
+  .nav-sheet-close{color:var(--sidebar-text);border-color:var(--sidebar-line);font-size:14px;padding:7px 14px}
+  .nav-sheet .nav-section{color:var(--sidebar-text);opacity:1;font-size:11px;letter-spacing:.18em;padding:18px 18px 8px;margin-top:0;border-top:1px solid var(--sidebar-line);background:rgba(255,255,255,.04)}
+  .nav-sheet .nav-section.first{border-top:none}
+  .nav-sheet-item{color:var(--sidebar-text);font-size:16px;font-weight:500;padding:15px 18px;border-bottom:1px solid var(--sidebar-line);background:none}
+  .nav-sheet-item:active{background:rgba(255,255,255,.08)}
+  .nav-sheet-item.active{color:var(--accent-on-dark);background:var(--accent-on-dark-wash);font-weight:700}
 
   /* Cards lift off the page instead of being outlined on it. */
   .card,.panel{background:var(--surface-raised);border:1px solid var(--card-border);border-radius:var(--radius-md);box-shadow:var(--shadow-md)}
