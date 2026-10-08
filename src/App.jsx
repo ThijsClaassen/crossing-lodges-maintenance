@@ -926,6 +926,9 @@ function BikeDrawer({ bike, issues, companyId, isAdmin, jobs = [], jobCosts = {}
   const s = bikeSummary(bike, issues, { jobs, jobCosts });
   const jobById = Object.fromEntries(jobs.map(j => [j.id, j]));
   const [newWork, setNewWork] = useState("");
+  // When the planned work is due (#562): today by default, or any later date,
+  // e.g. the next service. The job card lands on the Calendar on that day.
+  const [workDate, setWorkDate] = useState(isoToday);
   // One click from a problem to a job card on today's calendar (#556).
   const createJobFor = async issue => {
     const job = { ...jobFromProblem(bike, issue, { id: uid(), companyId, dueDMY: today() }) };
@@ -936,14 +939,16 @@ function BikeDrawer({ bike, issues, companyId, isAdmin, jobs = [], jobCosts = {}
       onIssues(p => p.map(i => i.id === issue.id ? { ...i, job_id: job.id } : i));
     } catch (e) { alert("Could not create the job card: " + e.message + (/mtb_/.test(e.message) ? "\nRun add_rainfall_and_mtb.sql first." : "")); }
   };
-  // Planned work that is not a reported problem — a service, new tyres.
+  // Planned work that is not a reported problem — a service, new tyres —
+  // on the date it is due (#562).
   const createWorkJob = async () => {
     const what = newWork.trim();
     if (!what) return alert("Say what the work is, e.g. full service.");
+    if (!workDate) return alert("Pick the date the work is due.");
     const job = { id: uid(), company_id: companyId, location_id: bike.location_id, template_id: null,
       name: `${bike.code}: ${what}`.slice(0, 120), description: bike.make_model || null, job_type: "preventive",
-      destination_id: null, dest_name: null, assigned_to: null, due_date: today(), status: "scheduled", mtb_bike_id: bike.id };
-    try { await sb.insert("maint_jobs", job); onJobCreated && onJobCreated(job); setNewWork(""); }
+      destination_id: null, dest_name: null, assigned_to: null, due_date: fromISO(workDate), status: "scheduled", mtb_bike_id: bike.id };
+    try { await sb.insert("maint_jobs", job); onJobCreated && onJobCreated(job); setNewWork(""); setWorkDate(isoToday); }
     catch (e) { alert("Could not create the job card: " + e.message); }
   };
   const repeats = repeatProblems(issues, bike.id);
@@ -1057,9 +1062,13 @@ function BikeDrawer({ bike, issues, companyId, isAdmin, jobs = [], jobCosts = {}
           Materials, and completing it records labour and stock cost. Open a job from the Calendar to work on it.
         </div>
         <div className="drawer-sect">Plan work</div>
-        <div style={{display:"flex",gap:8,marginBottom:14}}>
-          <input type="text" style={{flex:1}} placeholder="e.g. full service, new tyres" value={newWork} onChange={e => setNewWork(e.target.value)} onKeyDown={e => { if (e.key === "Enter") createWorkJob(); }}/>
+        <div style={{display:"flex",gap:8,marginBottom:6,flexWrap:"wrap"}}>
+          <input type="text" style={{flex:"1 1 200px"}} placeholder="e.g. full service, new tyres" value={newWork} onChange={e => setNewWork(e.target.value)} onKeyDown={e => { if (e.key === "Enter") createWorkJob(); }}/>
+          <input type="date" aria-label="Due on" title="Due on" style={{flex:"0 0 150px"}} value={workDate} onChange={e => setWorkDate(e.target.value)}/>
           <button className="btn btn-primary" onClick={createWorkJob}>Create job card</button>
+        </div>
+        <div style={{fontSize:11.5,color:T.muted,marginBottom:14}}>
+          {workDate && workDate > isoToday ? `Goes on the Calendar on ${fromISO(workDate)}.` : "Goes on today's Calendar. Pick a later date to plan ahead, e.g. the next service."}
         </div>
         <div className="drawer-sect">Job cards · {jobs.length}</div>
         {jobs.length === 0 && <div className="empty">No job cards for this bike yet.</div>}

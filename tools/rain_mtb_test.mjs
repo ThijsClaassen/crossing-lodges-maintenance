@@ -97,6 +97,12 @@ check('MTB: ad-hoc job cards can be tagged to a bike', /<label>Mountain bike<\/l
 check('MTB: adding / editing / retiring a bike is admin-only; logging and fixing problems is for everyone', /\{isAdmin && <button className="btn btn-primary" onClick=\{\(\) => setNewBike/.test(app) && /disabled=\{!isAdmin\}/.test(app) && /onClick=\{logProblem\}/.test(app) && !/isAdmin && <button[^>]*logProblem/.test(app))
 check('both pages explain a missing table instead of failing', /run add_rainfall_and_mtb\.sql/.test(app))
 
+// #562 (2026-10-08): planned bike work can be dated ahead, e.g. the next service.
+check('Plan work has a due date (today by default) next to Create job card', /const \[workDate, setWorkDate\] = useState\(isoToday\)/.test(app) && /<input type="date" aria-label="Due on"[^>]*value=\{workDate\}/.test(app))
+check('the job card is due on the picked date (DD/MM/YYYY like every job), not always today', /due_date: fromISO\(workDate\), status: "scheduled", mtb_bike_id: bike\.id/.test(app) && !/job_type: "preventive",\s*destination_id: null, dest_name: null, assigned_to: null, due_date: today\(\)/.test(app))
+check('says where it goes: "Goes on the Calendar on …" for a future date', /Goes on the Calendar on \$\{fromISO\(workDate\)\}/.test(app))
+check('date resets to today after creating', /setNewWork\(""\); setWorkDate\(isoToday\);/.test(app))
+
 console.log(`rain_mtb_test: ${passed} passed, ${failures.length} failed`)
 for (const f of failures) console.log('  FAIL ' + f)
 process.exit(failures.length ? 1 : 0)
