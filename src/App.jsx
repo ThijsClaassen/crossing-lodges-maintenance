@@ -18,6 +18,7 @@ import { wholeLine, validateSplits, planWrites, proRata } from "./splitLines.js"
 import { jobCostBreakdown, invoiceTotalDisagrees } from "./jobCosting.js";
 import { missingOccurrences, nextDueOnCompletion, nextDueFromOpenJobs, describeGeneration } from "./recurrence.js";
 import { todayIso } from './dates.js'
+import { newestFirst } from './newestFirst.js'
 import { MONTHS, lodgeRain, lodgeYear, rainSummary, existingReading, bikeSummary, sortBikes, repeatProblems, jobFromProblem } from './rainMtb.js'
 
 const fmtR  = n=>`R ${Number(n||0).toLocaleString("en-ZA",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
@@ -1063,7 +1064,7 @@ function BikeDrawer({ bike, issues, companyId, isAdmin, jobs = [], jobCosts = {}
           <div className="tbl-wrap"><table className="tbl">
             <thead><tr><th>Job</th><th>Due</th><th>Status</th><th className="num">Cost</th></tr></thead>
             <tbody>
-              {[...jobs].sort((a, b) => String(b.completed_date || b.due_date).localeCompare(String(a.completed_date || a.due_date))).map(j => (
+              {newestFirst(jobs, j => j.completed_date || j.due_date).map(j => (
                 <tr key={j.id}>
                   <td>{j.name}{j.mtb_issue_id && <div style={{fontSize:11,color:T.muted}}>from a reported problem</div>}</td>
                   <td className="mono">{j.completed_date || j.due_date}</td>
@@ -1602,7 +1603,7 @@ function MemberPurchaseModal({ companyId, locId, onClose, pendingRefresh, onBill
             </div>
             <div style={{fontSize:12,color:T.muted,marginBottom:8}}>Lines ticked "Bill to Member" when scanning a slip land here first — nothing bills until you tick them below and pick who to bill.</div>
             {pendingLoading&&pending.length===0&&<div style={{fontSize:12,color:T.muted}}>Loading…</div>}
-            {pending.map(p=>(
+            {newestFirst(pending,"charge_date").map(p=>(
               <div key={p.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderTop:`1px solid ${T.border}`}}>
                 <label style={{display:"flex",gap:8,alignItems:"center",cursor:"pointer",flex:1}}>
                   <input type="checkbox" checked={selected.has(p.id)} onChange={()=>toggleSelected(p.id)}/>
@@ -1713,7 +1714,7 @@ function Purchases({ locId, items, purchases, setPurchases, isAdmin, companyId, 
       <thead><tr><th>Date</th><th>Item</th><th className="num">Qty</th><th className="num">Total Cost</th>
         <th className="num">Cost/Unit</th><th>Supplier</th><th>Notes</th><th>Slip</th><th></th></tr></thead>
       <tbody>
-        {purchases.map(p=>(
+        {newestFirst(purchases).map(p=>(
           <tr key={p.id}>
             <td className="mono" style={{fontSize:11}}>{p.date}</td>
             <td style={{fontWeight:600}}>{itemName(p.item_id)}</td>
@@ -1828,7 +1829,7 @@ function Issues({ locId, items, issues, setIssues, destinations, purchases, jobs
     <div className="tbl-wrap"><table className="tbl">
       <thead><tr><th>Date</th><th>Item</th><th className="num">Qty</th><th>Issued To</th><th>Notes</th><th></th></tr></thead>
       <tbody>
-        {issues.map(i=>(
+        {newestFirst(issues).map(i=>(
           <tr key={i.id}>
             <td className="mono" style={{fontSize:11}}>{i.date}</td>
             <td style={{fontWeight:600}}>{itemName(i.item_id)}</td>
@@ -1982,7 +1983,7 @@ function CreditNotes({ locId, items, creditNotes, setCreditNotes, setIssues, isA
       <thead><tr><th>Date</th><th>Item</th><th className="num">Qty</th><th className="num">Credit R</th>
         <th>Supplier</th><th>Reason</th><th>Credit note #</th><th>Slip</th><th></th></tr></thead>
       <tbody>
-        {creditNotes.map(c=>(
+        {newestFirst(creditNotes).map(c=>(
           <tr key={c.id}>
             <td className="mono" style={{fontSize:11}}>{fromISO(c.date)}</td>
             <td style={{fontWeight:600}}>{c.item_description}</td>
