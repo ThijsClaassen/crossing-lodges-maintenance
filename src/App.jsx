@@ -19,6 +19,9 @@ import { jobCostBreakdown, invoiceTotalDisagrees } from "./jobCosting.js";
 import { missingOccurrences, nextDueOnCompletion, nextDueFromOpenJobs, describeGeneration } from "./recurrence.js";
 import { todayIso } from './dates.js'
 import { newestFirst } from './newestFirst.js'
+
+// Item pickers (2026-10-08): "__none__" is the Uncategorised choice.
+const inCategory = (it, c) => (c === "__none__" ? !it.category : it.category === c);
 import { MONTHS, lodgeRain, lodgeYear, rainSummary, existingReading, bikeSummary, sortBikes, repeatProblems, jobFromProblem } from './rainMtb.js'
 
 const fmtR  = n=>`R ${Number(n||0).toLocaleString("en-ZA",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
@@ -1799,9 +1802,11 @@ function Issues({ locId, items, issues, setIssues, destinations, purchases, jobs
   const [category,setCategory]=useState("");
   const categories = useMemo(()=>[...new Set(items.map(it=>it.category).filter(Boolean))].sort(),[items]);
   const uncategorisedCount = items.filter(it=>!it.category).length;
+  // (2026-10-08) No category = search ALL items; a category only narrows the
+  // list. Thijs: "always search items, also if you didn't submit a category".
   const itemsInCat = category
-    ? items.filter(it => category==="__none__" ? !it.category : it.category===category)
-    : [];
+    ? items.filter(it => inCategory(it, category))
+    : items;
 
   const save=async()=>{
     if(!form.item_id||!form.qty)return;
@@ -1854,8 +1859,8 @@ function Issues({ locId, items, issues, setIssues, destinations, purchases, jobs
         <div className="modal">
           <div className="modal-title">Log <span>Issue</span></div>
           <div className="field"><label>Category</label>
-            <select value={category} onChange={e=>{setCategory(e.target.value);setForm(p=>({...p,item_id:""}));}}>
-              <option value="">-- Select category --</option>
+            <select value={category} onChange={e=>{const c=e.target.value;setCategory(c);setForm(p=>{const it=items.find(x=>x.id===p.item_id);return c&&it&&!inCategory(it,c)?{...p,item_id:""}:p;});}}>
+              <option value="">All categories</option>
               {categories.map(c=><option key={c} value={c}>{c}</option>)}
               {uncategorisedCount>0 && <option value="__none__">Uncategorised</option>}
             </select>
@@ -1864,9 +1869,8 @@ function Issues({ locId, items, issues, setIssues, destinations, purchases, jobs
             <SearchableSelect
               value={form.item_id}
               onChange={v=>setForm(p=>({...p,item_id:v}))}
-              options={itemsInCat.map(i=>({value:i.id,label:`${i.description} (${i.unit})`}))}
-              placeholder={category ? "-- Select item --" : "Pick a category first"}
-              disabled={!category}
+              options={itemsInCat.map(i=>({value:i.id,label:`${!category&&i.category?`${i.category} · `:""}${i.description} (${i.unit})`}))}
+              placeholder={category ? "-- Select item --" : "Search all items…"}
             />
           </div>
           <div className="grid2">
@@ -3514,7 +3518,13 @@ function MaterialPicker({ items, rows, setRows }) {
   const upd    = (i,k,v)=>setRows(r=>r.map((x,j)=>j===i?{...x,[k]:v}:x));
   const remove = i=>setRows(r=>r.filter((_,j)=>j!==i));
 
-  const setCategory = (i,cat)=>setRows(r=>r.map((x,j)=>j===i?{...x,category:cat,item_id:""}:x)); // reset item when category changes
+  // Changing the category keeps the chosen item if it is in that category
+  // (or the category is cleared back to all); otherwise the item is reset.
+  const setCategory = (i,cat)=>setRows(r=>r.map((x,j)=>{
+    if (j!==i) return x;
+    const it = items.find(y=>y.id===x.item_id);
+    return {...x,category:cat,item_id: cat && it && !inCategory(it,cat) ? "" : x.item_id};
+  }));
 
   const selectStyle = {flex:1,background:"rgba(0,0,0,.25)",border:`1px solid ${T.border}`,borderRadius:6,
     padding:"9px 10px",color:T.cream,fontFamily:"'Inter',sans-serif",fontSize:14,outline:"none"};
@@ -3527,23 +3537,23 @@ function MaterialPicker({ items, rows, setRows }) {
       </div>
       {rows.length===0 && <div style={{fontSize:11,color:T.muted}}>No materials added.</div>}
       {rows.map((r,i)=>{
+        // No category = search all items (2026-10-08); a category narrows it.
         const itemsInCat = r.category
-          ? items.filter(it => r.category==="__none__" ? !it.category : it.category===r.category)
-          : [];
+          ? items.filter(it => inCategory(it, r.category))
+          : items;
         return (
           <div key={i} style={{display:"flex",gap:7,marginBottom:7,alignItems:"center",flexWrap:"wrap"}}>
             <select value={r.category||""} onChange={e=>setCategory(i,e.target.value)} style={{...selectStyle,flex:"0 0 160px"}}>
-              <option value="">-- Category --</option>
+              <option value="">All categories</option>
               {categories.map(c=><option key={c} value={c}>{c}</option>)}
               {uncategorisedCount>0 && <option value="__none__">Uncategorised</option>}
             </select>
             <SearchableSelect
               value={r.item_id}
               onChange={v=>upd(i,"item_id",v)}
-              options={itemsInCat.map(it=>({value:it.id,label:`${it.description} (${it.unit})`}))}
-              placeholder={r.category ? "-- Select item --" : "Pick a category first"}
-              disabled={!r.category}
-              style={{flex:1,opacity:r.category?1:.5}}
+              options={itemsInCat.map(it=>({value:it.id,label:`${!r.category&&it.category?`${it.category} · `:""}${it.description} (${it.unit})`}))}
+              placeholder={r.category ? "-- Select item --" : "Search all items…"}
+              style={{flex:1}}
               inputStyle={{...selectStyle}}
             />
             <input className="count-input" type="number" inputMode="decimal" placeholder="Qty" value={r.qty}
