@@ -1,6 +1,8 @@
 // Rainfall (#553) and MTB problems (#556) — the arithmetic, kept free of React
 // so tools/rain_mtb_test.mjs runs it directly. 2026-10-04.
 
+import { occurrenceDates, MAX_OCCURRENCES } from './recurrence.js'
+
 // ── Rainfall ─────────────────────────────────────────────────────────────────
 // Readings are { location_id, gauge_id, reading_date: 'YYYY-MM-DD', mm }.
 //
@@ -143,4 +145,63 @@ export function jobFromProblem(bike, issue, { id, companyId, dueDMY }) {
     job_type: 'reactive', destination_id: null, dest_name: null, assigned_to: null,
     due_date: dueDMY, status: 'scheduled', mtb_bike_id: bike.id, mtb_issue_id: issue.id,
   }
+}
+
+// ── Recurring bike work (#562, 2026-10-08) ─────────────────────────────────────
+// Thijs: "Will it also be possible to make it a recurring job card? Like we
+// can do with the Job Templates?" — so it IS a job template, linked to the
+// bike (maint_job_templates.mtb_bike_id). That way it behaves exactly like
+// every other recurring job: same Job Templates page, same "next card on
+// completion" or "every card up to an end date", and the bike's Job cards tab
+// shows the cards because each one carries mtb_bike_id.
+//
+// planBikeWork returns what to write; the caller writes it. Dates in and out:
+// start/end as ISO from the date pickers, job due dates as DD/MM/YYYY like
+// every maint_jobs row.
+//   repeat = { type: 'none' | 'weeks' | 'months', n, endISO }
+//   → { template: row | null, jobs: [row, …], note }
+
+const isoToDMY = (iso) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''))
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : ''
+}
+const PERIOD_WORD = { weeks: ['week', 'weeks'], months: ['month', 'months'] }
+export const everyText = (type, n) => {
+  const k = Number(n) || 1
+  const w = PERIOD_WORD[type]
+  return w ? (k === 1 ? `every ${w[0]}` : `every ${k} ${w[1]}`) : 'once'
+}
+
+export function planBikeWork(bike, what, { startISO, repeat = { type: 'none' }, companyId, newId }) {
+  const name = `${bike.code}: ${String(what || '').trim()}`.slice(0, 120)
+  const startDMY = isoToDMY(startISO)
+  const base = {
+    company_id: companyId, location_id: bike.location_id, name,
+    description: bike.make_model || null, job_type: 'preventive',
+    destination_id: null, dest_name: null, assigned_to: null,
+    status: 'scheduled', mtb_bike_id: bike.id,
+  }
+  const type = repeat?.type === 'weeks' || repeat?.type === 'months' ? repeat.type : 'none'
+  const n = Math.max(1, parseInt(repeat?.n, 10) || 1)
+
+  if (type === 'none') {
+    return { template: null, jobs: [{ ...base, id: newId(), template_id: null, due_date: startDMY }], note: `One job card on ${startDMY}.` }
+  }
+
+  const endDMY = repeat.endISO ? isoToDMY(repeat.endISO) : null
+  const template = {
+    id: newId(), company_id: companyId, location_id: bike.location_id, name,
+    description: base.description, job_type: 'preventive',
+    destination_id: null, dest_name: null, assigned_to: null,
+    recurrence_type: type, recurrence_n: n, next_due: startDMY,
+    recurrence_end_date: endDMY, active: true, mtb_bike_id: bike.id,
+  }
+  // No end date: one card now, the next one is made when it is completed
+  // (the Job Templates behaviour). End date: every card up to it.
+  const dates = endDMY ? occurrenceDates(startDMY, type, n, endDMY) : [startDMY]
+  const jobs = dates.map((d) => ({ ...base, id: newId(), template_id: template.id, due_date: d }))
+  const note = endDMY
+    ? `${jobs.length} job card${jobs.length === 1 ? '' : 's'}, ${everyText(type, n)} from ${startDMY} to ${endDMY}${jobs.length >= MAX_OCCURRENCES ? ' (capped)' : ''}.`
+    : `First card on ${startDMY}, then ${everyText(type, n)}: the next card is made when each one is completed.`
+  return { template, jobs, note }
 }

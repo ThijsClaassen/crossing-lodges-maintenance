@@ -99,9 +99,40 @@ check('both pages explain a missing table instead of failing', /run add_rainfall
 
 // #562 (2026-10-08): planned bike work can be dated ahead, e.g. the next service.
 check('Plan work has a due date (today by default) next to Create job card', /const \[workDate, setWorkDate\] = useState\(isoToday\)/.test(app) && /<input type="date" aria-label="Due on"[^>]*value=\{workDate\}/.test(app))
-check('the job card is due on the picked date (DD/MM/YYYY like every job), not always today', /due_date: fromISO\(workDate\), status: "scheduled", mtb_bike_id: bike\.id/.test(app) && !/job_type: "preventive",\s*destination_id: null, dest_name: null, assigned_to: null, due_date: today\(\)/.test(app))
-check('says where it goes: "Goes on the Calendar on …" for a future date', /Goes on the Calendar on \$\{fromISO\(workDate\)\}/.test(app))
-check('date resets to today after creating', /setNewWork\(""\); setWorkDate\(isoToday\);/.test(app))
+check('the job cards come from planBikeWork with the picked date (not always today)', /planBikeWork\(bike, what, \{ startISO: workDate, repeat, companyId, newId: uid \}\)/.test(app) && !/job_type: "preventive",\s*destination_id: null, dest_name: null, assigned_to: null, due_date: today\(\)/.test(app))
+check('says where it goes before creating (the plan note, or "Goes on the Calendar on …")', /\{plan \? plan\.note/.test(app) && /Goes on the Calendar on \$\{fromISO\(workDate\)\}/.test(app))
+check('form resets after creating (date back to today, repeat back to once)', /setNewWork\(""\); setWorkDate\(isoToday\); setRepeat\(\{ type: "none"/.test(app))
+
+// #562 follow-up (2026-10-08): repeating bike work = a job template on the bike.
+{
+  const R = await import(pathToFileURL(join(ROOT, 'src', 'rainMtb.js')).href)
+  let n = 0
+  const newId = () => `id${++n}`
+  const bike = { id: 'b7', code: 'MTB 07', location_id: 'ZC', make_model: 'Giant Talon' }
+  const once = R.planBikeWork(bike, 'new tyres', { startISO: '2026-11-12', companyId: 'c1', newId })
+  check('once: one job card, no template, due on the picked date (DD/MM/YYYY)', !once.template && once.jobs.length === 1 && once.jobs[0].due_date === '12/11/2026' && once.jobs[0].mtb_bike_id === 'b7' && once.jobs[0].template_id === null)
+  check('once: named for the bike, preventive, scheduled', once.jobs[0].name === 'MTB 07: new tyres' && once.jobs[0].job_type === 'preventive' && once.jobs[0].status === 'scheduled')
+
+  const open = R.planBikeWork(bike, 'full service', { startISO: '2026-11-12', repeat: { type: 'months', n: '3' }, companyId: 'c1', newId })
+  check('repeat, no end: a template + ONE card now (next card on completion, like Job Templates)', open.template && open.jobs.length === 1 && open.template.recurrence_type === 'months' && open.template.recurrence_n === 3 && open.template.recurrence_end_date === null && open.template.next_due === '12/11/2026')
+  check('repeat: the template and its card both carry the bike; the card points at the template', open.template.mtb_bike_id === 'b7' && open.jobs[0].mtb_bike_id === 'b7' && open.jobs[0].template_id === open.template.id && open.template.active === true)
+  check('repeat, no end: the note explains the next card comes on completion', /then every 3 months: the next card is made when each one is completed/.test(open.note))
+
+  const till = R.planBikeWork(bike, 'full service', { startISO: '2026-11-12', repeat: { type: 'months', n: 3, endISO: '2027-06-30' }, companyId: 'c1', newId })
+  check('repeat with an end date: every card up to it (12/11, 12/02, 12/05)', till.jobs.map((j) => j.due_date).join() === '12/11/2026,12/02/2027,12/05/2027' && till.template.recurrence_end_date === '30/06/2027', till.jobs.map((j) => j.due_date).join())
+  check('…and the note says how many', /^3 job cards, every 3 months from 12\/11\/2026 to 30\/06\/2027/.test(till.note))
+  check('weekly works too, n defaults to 1', R.planBikeWork(bike, 'wash', { startISO: '2026-11-02', repeat: { type: 'weeks', n: '', endISO: '2026-11-16' }, companyId: 'c1', newId }).jobs.length === 3)
+  check('everyText', R.everyText('months', 1) === 'every month' && R.everyText('weeks', 2) === 'every 2 weeks')
+
+  check('drawer: Repeat (admins) with every N weeks/months and an optional end date', /isAdmin && \(<>\s*<span style=\{\{color:T\.muted\}\}>Repeat<\/span>/.test(app) && /aria-label="Until \(optional\)"/.test(app))
+  check('drawer: writes the template first, then the cards; asks before making several', /if \(template\) \{ await sb\.insert\("maint_job_templates", template\)/.test(app) && /made\.length > 1 && !window\.confirm/.test(app))
+  check('drawer: lists the bike\'s repeating work with Stop repeating (active=false, cards stay)', /Repeating · \{templates\.length\}/.test(app) && /sb\.update\("maint_job_templates", t\.id, \{ active: false \}\)/.test(app))
+  check('completing a card of a bike template: the next card stays on the bike', /\.\.\.\(tpl\.mtb_bike_id \? \{ mtb_bike_id: tpl\.mtb_bike_id \} : \{\}\)/.test(app))
+  check('editing a bike template under Job Templates: generated cards stay on the bike', /const tplBike = editId \? \(templates\.find\(t=>t\.id===editId\)\?\.mtb_bike_id \|\| null\) : null;/.test(app) && /\.\.\.\(tplBike \? \{ mtb_bike_id: tplBike \} : \{\}\)/.test(app))
+  check('MtbPage gets the templates', /<MtbPage [^>]*templates=\{templates\} setTemplates=\{setTemplates\}\/>/.test(app))
+  const sql = readFileSync(join(ROOT, 'add_mtb_recurring.sql'), 'utf8')
+  check('SQL: maint_job_templates.mtb_bike_id, safe to re-run', /alter table maint_job_templates\s+add column if not exists mtb_bike_id uuid references mtb_bikes\(id\) on delete set null/.test(sql))
+}
 
 console.log(`rain_mtb_test: ${passed} passed, ${failures.length} failed`)
 for (const f of failures) console.log('  FAIL ' + f)

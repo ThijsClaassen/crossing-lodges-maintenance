@@ -22,7 +22,7 @@ import { newestFirst } from './newestFirst.js'
 
 // Item pickers (2026-10-08): "__none__" is the Uncategorised choice.
 const inCategory = (it, c) => (c === "__none__" ? !it.category : it.category === c);
-import { MONTHS, lodgeRain, lodgeYear, rainSummary, existingReading, bikeSummary, sortBikes, repeatProblems, jobFromProblem } from './rainMtb.js'
+import { MONTHS, lodgeRain, lodgeYear, rainSummary, existingReading, bikeSummary, sortBikes, repeatProblems, jobFromProblem, planBikeWork, everyText } from './rainMtb.js'
 
 const fmtR  = n=>`R ${Number(n||0).toLocaleString("en-ZA",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 const fmtN  = n=>Number(n||0).toLocaleString("en-ZA",{maximumFractionDigits:3});
@@ -802,7 +802,7 @@ function RainfallPage({ locId, companyId, isAdmin }) {
 // retiring a bike is for admins. Maths in rainMtb.js.
 const BLANK_BIKE = () => ({ code: "", make_model: "", frame_size: "", serial_number: "", purchase_date: "", notes: "" });
 
-function MtbPage({ locId, companyId, isAdmin, jobs = [], setJobs, jobInvoices = [] }) {
+function MtbPage({ locId, companyId, isAdmin, jobs = [], setJobs, jobInvoices = [], templates = [], setTemplates }) {
   const [bikes, setBikes] = useState(null);
   const [issues, setIssues] = useState([]);
   const [err, setErr] = useState("");
@@ -892,6 +892,8 @@ function MtbPage({ locId, companyId, isAdmin, jobs = [], setJobs, jobInvoices = 
       <BikeDrawer key={openBike.id} bike={openBike} issues={issues.filter(i => i.bike_id === openBike.id)} companyId={companyId} isAdmin={isAdmin}
         jobs={bikeJobs.filter(j => j.mtb_bike_id === openBike.id)} jobCosts={jobCosts}
         onJobCreated={job => setJobs && setJobs(p => [...p, job])}
+        templates={templates.filter(t => t.mtb_bike_id === openBike.id)}
+        onTemplate={(t, gone) => setTemplates && setTemplates(p => gone ? p.filter(x => x.id !== t.id) : [...p.filter(x => x.id !== t.id), t])}
         onClose={() => setOpenId(null)}
         onBike={row => setBikes(p => p.map(b => b.id === row.id ? row : b))}
         onIssues={fn => setIssues(fn)}/>
@@ -916,7 +918,7 @@ function BikeFields({ value, onChange, disabled }) {
 const BIKE_TABS = [{ id: "problems", label: "Problems" }, { id: "jobs", label: "Job cards" }, { id: "details", label: "Bike details" }];
 const JOB_STATUS_SHORT = { scheduled: "Open", in_progress: "In progress", completed: "Completed", cancelled: "Cancelled" };
 
-function BikeDrawer({ bike, issues, companyId, isAdmin, jobs = [], jobCosts = {}, onJobCreated, onClose, onBike, onIssues }) {
+function BikeDrawer({ bike, issues, companyId, isAdmin, jobs = [], jobCosts = {}, onJobCreated, onClose, onBike, onIssues, templates = [], onTemplate }) {
   const [tab, setTab] = useState("problems");
   const isoToday = todayIso();
   const [report, setReport] = useState({ reported_on: isoToday, problem: "", reported_by: "" });
@@ -929,6 +931,12 @@ function BikeDrawer({ bike, issues, companyId, isAdmin, jobs = [], jobCosts = {}
   // When the planned work is due (#562): today by default, or any later date,
   // e.g. the next service. The job card lands on the Calendar on that day.
   const [workDate, setWorkDate] = useState(isoToday);
+  // Repeat (#562): once, or every N weeks / months like a Job Template, with
+  // an optional end date. Repeating work IS a job template linked to the bike.
+  const [repeat, setRepeat] = useState({ type: "none", n: "3", endISO: "" });
+  const plan = newWork.trim() && workDate
+    ? planBikeWork(bike, newWork, { startISO: workDate, repeat, companyId, newId: () => "preview" })
+    : null;
   // One click from a problem to a job card on today's calendar (#556).
   const createJobFor = async issue => {
     const job = { ...jobFromProblem(bike, issue, { id: uid(), companyId, dueDMY: today() }) };
@@ -940,16 +948,28 @@ function BikeDrawer({ bike, issues, companyId, isAdmin, jobs = [], jobCosts = {}
     } catch (e) { alert("Could not create the job card: " + e.message + (/mtb_/.test(e.message) ? "\nRun add_rainfall_and_mtb.sql first." : "")); }
   };
   // Planned work that is not a reported problem — a service, new tyres —
-  // on the date it is due (#562).
+  // on the date it is due, once or repeating (#562).
   const createWorkJob = async () => {
     const what = newWork.trim();
     if (!what) return alert("Say what the work is, e.g. full service.");
     if (!workDate) return alert("Pick the date the work is due.");
-    const job = { id: uid(), company_id: companyId, location_id: bike.location_id, template_id: null,
-      name: `${bike.code}: ${what}`.slice(0, 120), description: bike.make_model || null, job_type: "preventive",
-      destination_id: null, dest_name: null, assigned_to: null, due_date: fromISO(workDate), status: "scheduled", mtb_bike_id: bike.id };
-    try { await sb.insert("maint_jobs", job); onJobCreated && onJobCreated(job); setNewWork(""); setWorkDate(isoToday); }
-    catch (e) { alert("Could not create the job card: " + e.message); }
+    if (repeat.type !== "none" && repeat.endISO && repeat.endISO < workDate) return alert("The end date is before the first date.");
+    const { template, jobs: made, note } = planBikeWork(bike, what, { startISO: workDate, repeat, companyId, newId: uid });
+    if (template && made.length > 1 && !window.confirm(`${note}\n\nCreate them?`)) return;
+    try {
+      if (template) { await sb.insert("maint_job_templates", template); onTemplate && onTemplate(template); }
+      for (const job of made) { await sb.insert("maint_jobs", job); onJobCreated && onJobCreated(job); }
+      setNewWork(""); setWorkDate(isoToday); setRepeat({ type: "none", n: "3", endISO: "" });
+    } catch (e) {
+      alert("Could not create the job card: " + e.message + (/mtb_bike_id/.test(e.message) ? "\nRun add_mtb_recurring.sql first." : ""));
+    }
+  };
+  // Stop a repeating plan: no new cards after this; cards already on the
+  // Calendar stay (delete those there if they're no longer wanted).
+  const stopRepeating = async t => {
+    if (!window.confirm(`Stop repeating "${t.name}"?\n\nNo new job cards will be made. Cards already on the Calendar stay.`)) return;
+    try { await sb.update("maint_job_templates", t.id, { active: false }); onTemplate && onTemplate(t, true); }
+    catch (e) { alert("Error: " + e.message); }
   };
   const repeats = repeatProblems(issues, bike.id);
   const list = [...issues].sort((a, b) => (a.status === "fixed") - (b.status === "fixed") || String(b.reported_on).localeCompare(String(a.reported_on)));
@@ -1062,14 +1082,45 @@ function BikeDrawer({ bike, issues, companyId, isAdmin, jobs = [], jobCosts = {}
           Materials, and completing it records labour and stock cost. Open a job from the Calendar to work on it.
         </div>
         <div className="drawer-sect">Plan work</div>
-        <div style={{display:"flex",gap:8,marginBottom:6,flexWrap:"wrap"}}>
+        <div style={{display:"flex",gap:8,marginBottom:8,flexWrap:"wrap"}}>
           <input type="text" style={{flex:"1 1 200px"}} placeholder="e.g. full service, new tyres" value={newWork} onChange={e => setNewWork(e.target.value)} onKeyDown={e => { if (e.key === "Enter") createWorkJob(); }}/>
           <input type="date" aria-label="Due on" title="Due on" style={{flex:"0 0 150px"}} value={workDate} onChange={e => setWorkDate(e.target.value)}/>
-          <button className="btn btn-primary" onClick={createWorkJob}>Create job card</button>
+        </div>
+        <div style={{display:"flex",gap:8,marginBottom:6,flexWrap:"wrap",alignItems:"center",fontSize:13}}>
+          {/* Repeating work is a job template, so like Job Templates it is for admins. */}
+          {isAdmin && (<>
+          <span style={{color:T.muted}}>Repeat</span>
+          <select aria-label="Repeat" value={repeat.type} onChange={e => setRepeat(r => ({ ...r, type: e.target.value }))} style={{flex:"0 0 auto"}}>
+            <option value="none">Once</option>
+            <option value="weeks">Every … weeks</option>
+            <option value="months">Every … months</option>
+          </select>
+          </>)}
+          {isAdmin && repeat.type !== "none" && (<>
+            <input type="number" inputMode="numeric" min="1" aria-label="Every how many" style={{width:64}} value={repeat.n} onChange={e => setRepeat(r => ({ ...r, n: e.target.value }))}/>
+            <span style={{color:T.muted}}>{repeat.type}, until</span>
+            <input type="date" aria-label="Until (optional)" title="Until (optional) — leave empty to keep going" style={{flex:"0 0 150px"}} value={repeat.endISO} onChange={e => setRepeat(r => ({ ...r, endISO: e.target.value }))}/>
+          </>)}
+          <button className="btn btn-primary" style={{marginLeft:"auto"}} onClick={createWorkJob}>{plan && plan.jobs.length > 1 ? `Create ${plan.jobs.length} job cards` : "Create job card"}</button>
         </div>
         <div style={{fontSize:11.5,color:T.muted,marginBottom:14}}>
-          {workDate && workDate > isoToday ? `Goes on the Calendar on ${fromISO(workDate)}.` : "Goes on today's Calendar. Pick a later date to plan ahead, e.g. the next service."}
+          {plan ? plan.note
+            : workDate && workDate > isoToday ? `Goes on the Calendar on ${fromISO(workDate)}.`
+            : "Goes on today's Calendar. Pick a later date to plan ahead, e.g. the next service, and Repeat for a regular service."}
+          {plan && plan.template && " It also shows under Job Templates, where it can be edited."}
         </div>
+        {templates.length > 0 && (<>
+          <div className="drawer-sect">Repeating · {templates.length}</div>
+          {templates.map(t => (
+            <div key={t.id} style={{display:"flex",gap:10,alignItems:"center",padding:"6px 0",borderBottom:`1px solid ${T.border}`,fontSize:13}}>
+              <div style={{flex:1}}>{t.name.replace(`${bike.code}: `, "")}
+                <div style={{fontSize:11.5,color:T.muted}}>{everyText(t.recurrence_type, t.recurrence_n)} · next {t.next_due}{t.recurrence_end_date ? ` · until ${t.recurrence_end_date}` : ""}</div>
+              </div>
+              {isAdmin && <button className="btn btn-ghost btn-sm" onClick={() => stopRepeating(t)}>Stop repeating</button>}
+            </div>
+          ))}
+          <div style={{height:14}}/>
+        </>)}
         <div className="drawer-sect">Job cards · {jobs.length}</div>
         {jobs.length === 0 && <div className="empty">No job cards for this bike yet.</div>}
         {jobs.length > 0 && (
@@ -3144,6 +3195,8 @@ function CompleteJob({ job, mats, items, purchases, issues, locId, templates, hr
           destination_id: tpl.destination_id||null, dest_name: tpl.dest_name||null,
           assigned_to: tpl.assigned_to||null, due_date: nextDue, status:"scheduled",
           company_id: companyId,
+          // Repeating bike work (#562): the next card stays on the bike.
+          ...(tpl.mtb_bike_id ? { mtb_bike_id: tpl.mtb_bike_id } : {}),
         };
         await sb.insert("maint_jobs", nextJob);
         setJobs(p=>[...p, nextJob]);
@@ -3654,6 +3707,8 @@ function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTe
       //                 already exist, so saving again is a no-op rather than
       //                 a second copy of the schedule.
       const existingForTpl = jobs.filter(j=>j.template_id===tplId);
+      // A template made from a bike's Plan work (#562) keeps its cards on that bike.
+      const tplBike = editId ? (templates.find(t=>t.id===editId)?.mtb_bike_id || null) : null;
       const dueDates = row.recurrence_end_date
         ? missingOccurrences({...row, id:tplId}, existingForTpl)
         : (editId ? [] : [row.next_due]);
@@ -3666,6 +3721,7 @@ function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTe
           destination_id:row.destination_id, dest_name:row.dest_name,
           assigned_to:row.assigned_to, due_date:due, status:"scheduled",
           company_id:companyId,
+          ...(tplBike ? { mtb_bike_id: tplBike } : {}),
         };
         await sb.insert("maint_jobs", job);
         madeJobs.push(job);
@@ -6157,7 +6213,7 @@ function AuthenticatedApp() {
                                        jobMaterials={jobMaterials} setJobMaterials={setJobMaterials} companyId={companyId} hrEmployees={hrEmployees}/>}
           {page==="items"        && isAdmin && <StockItems locId={locId} items={items} setItems={setItems} companyId={companyId}/>}
           {page==="destinations" && isAdmin && <Destinations locId={locId} destinations={allDests} setDestinations={setDestinations} companyId={companyId}/>}
-          {page==="mtb"          && <MtbPage locId={locId} companyId={companyId} isAdmin={isAdmin} jobs={jobs} setJobs={setJobs} jobInvoices={jobInvoices}/>}
+          {page==="mtb"          && <MtbPage locId={locId} companyId={companyId} isAdmin={isAdmin} jobs={jobs} setJobs={setJobs} jobInvoices={jobInvoices} templates={templates} setTemplates={setTemplates}/>}
           {page==="rainfall"     && <RainfallPage locId={locId} companyId={companyId} isAdmin={isAdmin}/>}
         </div>
       </div>
