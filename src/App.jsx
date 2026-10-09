@@ -2874,9 +2874,11 @@ function JobDetail({ job, onClose, locId, jobs, jobMaterials, items, purchases, 
     }catch(e){ alert("Error: "+e.message); }
   };
 
+  // Materials come out of Stock; without that module the tab goes (#561).
+  const { moduleOn: jobModuleOn } = useCompany();
   const tabs = [
     {id:"details",   label:"Details"},
-    {id:"materials", label:"Materials", count: mats.length},
+    ...(jobModuleOn("stock") ? [{id:"materials", label:"Materials", count: mats.length}] : []),
     {id:"cost",      label:"Cost"},
     ...(isOpen ? [{id:"complete", label:"Complete"}] : []),
   ];
@@ -3632,6 +3634,8 @@ function MaterialPicker({ items, rows, setRows }) {
 // ─── JOB TEMPLATES (Admin) ───────────────────────────────────────────────────
 function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTemplateMaterials,
                         items, destinations, jobs, setJobs, jobMaterials, setJobMaterials, companyId, hrEmployees }) {
+  // Template materials come out of Stock; without that module the tab goes (#561).
+  const { moduleOn: tplModuleOn } = useCompany();
   const locDests = destinations.filter(d=>d.location_id===locId).sort((a,b)=>a.sort_order-b.sort_order);
   const [showForm,setShowForm] = useState(false);
   const [editId,setEditId]     = useState(null);
@@ -3785,7 +3789,7 @@ function JobTemplates({ locId, templates, setTemplates, templateMaterials, setTe
     {showForm&&(
       <Drawer title={editId ? (form.name || "Job template") : "New job template"}
         meta={editId ? `${JOB_TYPES.find(x=>x.id===form.job_type)?.label||form.job_type} · ${recurLabel(form.recurrence_type, parseInt(form.recurrence_n)||1)}` : "Templates define recurring maintenance; saving schedules the first job."}
-        tabs={[{id:"job",label:"Job"},{id:"schedule",label:"Schedule"},{id:"materials",label:"Materials",count:rows.filter(r=>r.item_id).length}]}
+        tabs={[{id:"job",label:"Job"},{id:"schedule",label:"Schedule"},...(tplModuleOn("stock")?[{id:"materials",label:"Materials",count:rows.filter(r=>r.item_id).length}]:[])]}
         tab={tab} onTab={setTab} onClose={()=>setShowForm(false)}
         footer={<>
           <button className="btn btn-primary" onClick={save} disabled={busy||!form.name.trim()}>{busy?"Saving...":(editId?"Save changes":"Create template")}</button>
@@ -5808,6 +5812,8 @@ function AuthenticatedApp() {
     role,
     switchCompany,
     moduleOn,
+    appOn,
+    isOn,
     noCompany,
   } = useCompany();
 
@@ -5910,15 +5916,17 @@ function AuthenticatedApp() {
         sb.select("maint_job_materials", cf),
         sb.select("maint_template_materials", cf),
         sb.select("purchase_slips", `app=eq.maintenance&${cf}`),
-        sb.select("projects", cf),
-        sb.select("project_workstreams", cf),
-        sb.select("project_workstream_status", cf),
-        sb.select("project_progress_logs", cf),
-        sb.select("project_progress_materials", cf),
-        sb.select("project_progress_crew", cf),
-        sb.select("hr_employees", `active=eq.true&${cf}`),
-        sb.select("hr_schedule_locations", cf),
-        sb.select("hr_leave", cf),
+        // Projects only with the Projects module; staff, leave and lodges only
+        // with the HR app (#561). An empty list is what these screens already
+        // handle: no milestones on the calendar, "Assigned to" typed by hand,
+        // no availability warning.
+        ...(moduleOn("projects")
+          ? [sb.select("projects", cf), sb.select("project_workstreams", cf), sb.select("project_workstream_status", cf),
+             sb.select("project_progress_logs", cf), sb.select("project_progress_materials", cf), sb.select("project_progress_crew", cf)]
+          : [[], [], [], [], [], []].map(x => Promise.resolve(x))),
+        appOn("hr_linen") ? sb.select("hr_employees", `active=eq.true&${cf}`) : Promise.resolve([]),
+        isOn("hr_linen", "schedule") ? sb.select("hr_schedule_locations", cf) : Promise.resolve([]),
+        appOn("hr_linen") ? sb.select("hr_leave", cf) : Promise.resolve([]),
         sb.select("supplier_credit_notes", `app=eq.maintenance&${cf}`),
         sb.select("maint_job_invoices", cf).catch(()=>[]),
         sb.select("maintenance_billing_settings", cf).catch(()=>[]),
@@ -5928,7 +5936,8 @@ function AuthenticatedApp() {
         // Only job-linked trips matter here; the rest are Ops's own business.
         // .catch(()=>[]) so this app still works for companies that don't have
         // the vehicle register turned on.
-        sb.select("vehicle_trips", `${cf}&job_id=not.is.null`).catch(()=>[]),
+        // Vehicle cost only with Ops › Vehicle log (#561).
+        isOn("ops", "triplog") ? sb.select("vehicle_trips", `${cf}&job_id=not.is.null`).catch(()=>[]) : Promise.resolve([]),
       ]);
       const slipMap={}; (slipRows||[]).forEach(s=>{slipMap[s.id]=s;});
       setSlips(slipMap);
@@ -6190,7 +6199,8 @@ function AuthenticatedApp() {
         </div>
 
         <div className="section">
-          {page==="dashboard"    && <Dashboard locId={locId} items={items} purchases={purchases} issues={issues} counts={counts}
+          {/* Stock figures on the dashboard only with the Stock module (#561). */}
+          {page==="dashboard"    && <Dashboard locId={locId} items={moduleOn("stock")?items:[]} purchases={moduleOn("stock")?purchases:[]} issues={moduleOn("stock")?issues:[]} counts={moduleOn("stock")?counts:[]}
                                        jobs={jobs} jobMaterials={jobMaterials} projects={projects} workstreams={workstreams}/>}
           {page==="purchases" && canSee("purchases") && <Purchases locId={locId} items={items} purchases={purchases} setPurchases={setPurchases} isAdmin={isAdmin} companyId={companyId} slips={slips} onSlipAttached={onSlipAttached} creditNotes={creditNotes} setCreditNotes={setCreditNotes} setIssues={setIssues}/>}
           {page==="issues" && canSee("issues") && <Issues locId={locId} items={items} issues={issues} setIssues={setIssues}
