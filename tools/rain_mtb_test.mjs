@@ -87,8 +87,8 @@ check('SQL: roles step 5 rule applied when present (Maintenance writes only)', /
 check('SQL: marker present, nothing live after it', !/^\s*(create|alter|drop|grant|do)\b/m.test(sql.slice(sql.indexOf('THE MIGRATION ENDS HERE')).split('\n').filter((l) => !l.trim().startsWith('--')).join('\n')))
 
 const app = readFileSync(join(ROOT, 'src', 'App.jsx'), 'utf8')
-check('menu: MTB and Rainfall under "Assets", open to everyone', /\{id:"mtb",\s+label:"MTB",\s+section:"Assets",\s+adminOnly:false\}/.test(app) && /\{id:"rainfall",\s+label:"Rainfall",\s+section:"Assets",\s+adminOnly:false\}/.test(app))
-check('pages routed (MTB gets the job cards and their costs)', /page==="mtb"\s+&& <MtbPage [^>]*jobs=\{jobs\} setJobs=\{setJobs\} jobInvoices=\{jobInvoices\}/.test(app) && /page==="rainfall"\s+&& <RainfallPage [^>]*isAdmin=\{isAdmin\}/.test(app))
+check('menu: MTB and Rainfall under "Assets", open to everyone (each its own module, #560)', /\{id:"mtb",\s+label:"MTB",\s+section:"Assets",\s+adminOnly:false, module:"mtb"\}/.test(app) && /\{id:"rainfall",\s+label:"Rainfall",\s+section:"Assets",\s+adminOnly:false, module:"rainfall"\}/.test(app))
+check('pages routed (MTB gets the job cards and their costs)', /page==="mtb"\s+&& canSee\("mtb"\) && <MtbPage [^>]*jobs=\{jobs\} setJobs=\{setJobs\} jobInvoices=\{jobInvoices\}/.test(app) && /page==="rainfall"\s+&& canSee\("rainfall"\) && <RainfallPage [^>]*isAdmin=\{isAdmin\}/.test(app))
 check('rainfall: a second reading for the same meter and day replaces the first', /const existing = existingReading\(all, key\);[\s\S]{0,200}if \(existing\) \{\s*await sb\.update\("maint_rainfall"/.test(app))
 check('rainfall: admins add, rename and stop meters; logging needs a meter', /isAdmin && <button className="btn btn-ghost" onClick=\{\(\) => setMeterForm/.test(app) && /sb\.insert\("maint_rain_gauges"/.test(app) && /disabled=\{!lodgeMeters\.length\}/.test(app))
 check('MTB: "Create job card" on an open problem, linked both ways', /createJobFor = async issue =>[\s\S]{0,300}sb\.insert\("maint_jobs", job\)[\s\S]{0,100}sb\.update\("mtb_issues", issue\.id, \{ job_id: job\.id \}\)/.test(app))

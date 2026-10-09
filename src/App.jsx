@@ -11,6 +11,7 @@ import { resolveCompanyLogo, logoStyle } from "./companyLogo.js";
 import Login from "./Login.jsx";
 import SetPassword from "./SetPassword.jsx";
 import { CompanyProvider, useCompany } from "./CompanyContext.jsx";
+import { noCompanyText } from "./companySwitches.js";
 import { uploadPurchaseSlip, getSlipUrl } from "./slipUpload.js";
 import { availableMaintenanceStaff, normalizeDepartment } from "./maintenanceStaffEngine.js";
 import { listMembers as listBillingMembers, logMemberPurchase, listPendingCharges, addPendingCharges, billPendingCharges, deletePendingCharge, chargeMembersFromSlip } from "./memberPurchase.js";
@@ -5719,22 +5720,27 @@ function NewWorkstreamForm({ project, companyId, setWorkstreams, refreshWorkstre
 }
 
 // ─── PAGES ───────────────────────────────────────────────────────────────────
+// `module`: the module a page belongs to (#560 step 3). Switched off for the
+// company on the founders' site, its pages leave the menu. No module = core.
 const PAGES=[
   {id:"dashboard",   label:"Dashboard",    section:"Overview",   adminOnly:false},
   {id:"calendar",    label:"Calendar",     section:"Schedule",   adminOnly:false},
-  {id:"projects",    label:"Projects",     section:"Schedule",   adminOnly:false},
+  {id:"projects",    label:"Projects",     section:"Schedule",   adminOnly:false, module:"projects"},
   {id:"templates",   label:"Job Templates",section:"Schedule",   adminOnly:true},
-  {id:"purchases",   label:"Purchases",    section:"Stock",      adminOnly:false},
-  {id:"issues",      label:"Issues",       section:"Stock",      adminOnly:false},
-  {id:"count",       label:"Stock Count",  section:"Stock",      adminOnly:false},
-  {id:"orders",      label:"Orders",       section:"Stock",      adminOnly:false},
-  {id:"destcosts",   label:"Destination Costs", section:"Stock", adminOnly:false},
-  {id:"mtb",         label:"MTB",          section:"Assets",     adminOnly:false},
-  {id:"rainfall",    label:"Rainfall",     section:"Assets",     adminOnly:false},
-  {id:"billing",     label:"Internal Billing", section:"Management", adminOnly:true},
-  {id:"items",       label:"Stock Items",  section:"Management", adminOnly:true},
+  {id:"purchases",   label:"Purchases",    section:"Stock",      adminOnly:false, module:"stock"},
+  {id:"issues",      label:"Issues",       section:"Stock",      adminOnly:false, module:"stock"},
+  {id:"count",       label:"Stock Count",  section:"Stock",      adminOnly:false, module:"stock"},
+  {id:"orders",      label:"Orders",       section:"Stock",      adminOnly:false, module:"stock"},
+  {id:"destcosts",   label:"Destination Costs", section:"Stock", adminOnly:false, module:"stock"},
+  {id:"mtb",         label:"MTB",          section:"Assets",     adminOnly:false, module:"mtb"},
+  {id:"rainfall",    label:"Rainfall",     section:"Assets",     adminOnly:false, module:"rainfall"},
+  {id:"billing",     label:"Internal Billing", section:"Management", adminOnly:true, module:"billing"},
+  {id:"items",       label:"Stock Items",  section:"Management", adminOnly:true, module:"stock"},
   {id:"destinations",label:"Destinations", section:"Management", adminOnly:true},
 ];
+
+// The pages this person sees: their role, and the company's modules.
+const pagesFor = (isAdmin, moduleOn) => PAGES.filter(p => (isAdmin || !p.adminOnly) && (!p.module || moduleOn(p.module)));
 
 // ─── ROOT APP ────────────────────────────────────────────────────────────────
 export default function App() {
@@ -5801,6 +5807,8 @@ function AuthenticatedApp() {
     companyName,
     role,
     switchCompany,
+    moduleOn,
+    noCompany,
   } = useCompany();
 
   const [page,          setPage]         = useState(() => urlParam('page') || "dashboard");
@@ -5874,12 +5882,14 @@ function AuthenticatedApp() {
   // the first visible page instead of a blank screen (#489). Lives up here,
   // above the loading/error early returns, so the hook order never changes.
   useEffect(()=>{
-    const visible = PAGES.filter(p=>isAdmin||!p.adminOnly);
+    const visible = pagesFor(isAdmin, moduleOn);
     if(visible.length && !visible.some(p=>p.id===page)) setPage(visible[0].id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, isAdmin]);
+  }, [page, isAdmin, companyId, moduleOn("stock"), moduleOn("projects"), moduleOn("mtb"), moduleOn("rainfall"), moduleOn("billing")]);
 
-  useEffect(()=>{if(role&&!isAdmin&&page==="dashboard")setPage("purchases");},[role,isAdmin,page]);
+  // Staff start on Purchases; on the Calendar when the company has no Stock.
+  const staffHome = moduleOn("stock") ? "purchases" : "calendar";
+  useEffect(()=>{if(role&&!isAdmin&&page==="dashboard")setPage(staffHome);},[role,isAdmin,page,staffHome]);
 
   const loadAll=useCallback(async()=>{
     if (!companyId) return;
@@ -5998,7 +6008,7 @@ function AuthenticatedApp() {
 
   // Android back button → home (#555): Dashboard for admins; staff are sent
   // from the Dashboard to Purchases (see the effect above), so that is theirs.
-  useBackToHome({ page, setPage, home: isAdmin ? "dashboard" : "purchases" });
+  useBackToHome({ page, setPage, home: isAdmin ? "dashboard" : staffHome });
 
   if (companyLoading) {
     return (
@@ -6019,7 +6029,7 @@ function AuthenticatedApp() {
   if (!companyId) {
     return (
       <AuthMessageScreen>
-        <p>Your account doesn't have access to any company yet. Contact an administrator.</p>
+        <p>{noCompanyText(noCompany, "Maintenance")}</p>
       </AuthMessageScreen>
     );
   }
@@ -6053,9 +6063,12 @@ function AuthenticatedApp() {
   const templates    = allData.templates[locId] ||[];
   const creditNotes  = allData.creditNotes[locId]||[];
 
-  const visiblePages = PAGES.filter(p=>isAdmin||!p.adminOnly);
+  const visiblePages = pagesFor(isAdmin, moduleOn);
   const sections     = [...new Set(visiblePages.map(p=>p.section))];
   const current      = PAGES.find(p=>p.id===page);
+  // A switched-off module's page never renders, even for the one render
+  // before the effect above moves away from it (#560 step 3).
+  const canSee       = (id) => visiblePages.some(p=>p.id===id);
   const locColor     = LOC_COLORS[locId];
   const locName      = LOCATIONS.find(l=>l.id===locId)?.name;
   const now          = new Date();
@@ -6179,13 +6192,13 @@ function AuthenticatedApp() {
         <div className="section">
           {page==="dashboard"    && <Dashboard locId={locId} items={items} purchases={purchases} issues={issues} counts={counts}
                                        jobs={jobs} jobMaterials={jobMaterials} projects={projects} workstreams={workstreams}/>}
-          {page==="purchases"    && <Purchases locId={locId} items={items} purchases={purchases} setPurchases={setPurchases} isAdmin={isAdmin} companyId={companyId} slips={slips} onSlipAttached={onSlipAttached} creditNotes={creditNotes} setCreditNotes={setCreditNotes} setIssues={setIssues}/>}
-          {page==="issues"       && <Issues locId={locId} items={items} issues={issues} setIssues={setIssues}
+          {page==="purchases" && canSee("purchases") && <Purchases locId={locId} items={items} purchases={purchases} setPurchases={setPurchases} isAdmin={isAdmin} companyId={companyId} slips={slips} onSlipAttached={onSlipAttached} creditNotes={creditNotes} setCreditNotes={setCreditNotes} setIssues={setIssues}/>}
+          {page==="issues" && canSee("issues") && <Issues locId={locId} items={items} issues={issues} setIssues={setIssues}
                                        destinations={destinations} purchases={purchases} jobs={jobs} isAdmin={isAdmin} companyId={companyId}/>}
-          {page==="count"        && <StockCount locId={locId} items={items} purchases={purchases} issues={issues} counts={counts} setCounts={setCounts} companyId={companyId}/>}
-          {page==="orders"       && <Orders items={items} purchases={purchases} issues={issues} counts={counts}
+          {page==="count" && canSee("count") && <StockCount locId={locId} items={items} purchases={purchases} issues={issues} counts={counts} setCounts={setCounts} companyId={companyId}/>}
+          {page==="orders" && canSee("orders") && <Orders items={items} purchases={purchases} issues={issues} counts={counts}
                                        jobs={jobs} jobMaterials={jobMaterials} templates={templates} templateMaterials={templateMaterials}/>}
-          {page==="destcosts"    && <DestinationCosts destinations={destinations} issues={issues}
+          {page==="destcosts" && canSee("destcosts") && <DestinationCosts destinations={destinations} issues={issues}
                                        items={items} purchases={purchases} jobs={jobs}/>}
           {page==="calendar"     && <Calendar locId={locId} jobs={jobs} jobMaterials={jobMaterials} items={items}
                                        purchases={purchases} issues={issues} destinations={destinations}
@@ -6194,7 +6207,7 @@ function AuthenticatedApp() {
                                        projects={projects} workstreamStatus={workstreamStatus} progressLogs={progressLogs}
                                        workstreams={workstreams} hrEmployees={hrEmployees}
                                        jobInvoices={jobInvoices} vehicleTrips={vehicleTrips}/>}
-          {page==="projects"     && <ProjectsPage locId={locId} projects={projects} workstreams={workstreams}
+          {page==="projects" && canSee("projects") && <ProjectsPage locId={locId} projects={projects} workstreams={workstreams}
                                        workstreamStatus={workstreamStatus} progressLogs={progressLogs}
                                        progressMaterials={progressMaterials} setProgressMaterials={setProgressMaterials}
                                        progressCrew={progressCrew} setProgressCrew={setProgressCrew}
@@ -6204,17 +6217,17 @@ function AuthenticatedApp() {
                                        hrEmployees={hrEmployees} hrScheduleLocations={hrScheduleLocations} hrLeave={hrLeave}
                                        itemsByLoc={allData.items} purchasesByLoc={allData.purchases}
                                        isAdmin={isAdmin} companyId={companyId}/>}
-          {page==="billing"      && isAdmin && <InternalBillingPage invoices={jobInvoices} projectInvoices={projectInvoices} vehicleTrips={vehicleTrips}
+          {page==="billing" && canSee("billing") && isAdmin && <InternalBillingPage invoices={jobInvoices} projectInvoices={projectInvoices} vehicleTrips={vehicleTrips}
                                        projects={projects} workstreams={workstreams} billingSettings={billingSettings}
                                        setBillingSettings={setBillingSettings} companyId={companyId}/>}
           {page==="templates"    && isAdmin && <JobTemplates locId={locId} templates={templates} setTemplates={setTemplates}
                                        templateMaterials={templateMaterials} setTemplateMaterials={setTemplateMaterials}
                                        items={items} destinations={allDests} jobs={jobs} setJobs={setJobs}
                                        jobMaterials={jobMaterials} setJobMaterials={setJobMaterials} companyId={companyId} hrEmployees={hrEmployees}/>}
-          {page==="items"        && isAdmin && <StockItems locId={locId} items={items} setItems={setItems} companyId={companyId}/>}
+          {page==="items" && canSee("items") && isAdmin && <StockItems locId={locId} items={items} setItems={setItems} companyId={companyId}/>}
           {page==="destinations" && isAdmin && <Destinations locId={locId} destinations={allDests} setDestinations={setDestinations} companyId={companyId}/>}
-          {page==="mtb"          && <MtbPage locId={locId} companyId={companyId} isAdmin={isAdmin} jobs={jobs} setJobs={setJobs} jobInvoices={jobInvoices} templates={templates} setTemplates={setTemplates}/>}
-          {page==="rainfall"     && <RainfallPage locId={locId} companyId={companyId} isAdmin={isAdmin}/>}
+          {page==="mtb" && canSee("mtb") && <MtbPage locId={locId} companyId={companyId} isAdmin={isAdmin} jobs={jobs} setJobs={setJobs} jobInvoices={jobInvoices} templates={templates} setTemplates={setTemplates}/>}
+          {page==="rainfall" && canSee("rainfall") && <RainfallPage locId={locId} companyId={companyId} isAdmin={isAdmin}/>}
         </div>
       </div>
 
